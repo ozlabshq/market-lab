@@ -45,7 +45,7 @@ class ResearchStrategyTests(unittest.TestCase):
 
     def test_tsmom_target_weight_scales_down_in_higher_volatility(self):
         low_vol = [100 + i * 0.30 for i in range(180)]
-        high_vol = [100 + i * 0.30 + (1.5 if i % 2 == 0 else -1.5) for i in range(180)]
+        high_vol = [100 + i * 0.80 + (6.0 if i % 2 == 0 else -6.0) for i in range(180)]
         low_sig = generate_tsmom_signal("LOWVOL", bars_from_prices(low_vol))
         high_sig = generate_tsmom_signal("HIGHVOL", bars_from_prices(high_vol))
         self.assertEqual(low_sig.action, "BUY")

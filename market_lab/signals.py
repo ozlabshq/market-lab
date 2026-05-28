@@ -118,7 +118,7 @@ def generate_tsmom_signal(symbol: str, bars: list[Bar], lookbacks: tuple[int, ..
     if drawdown_from_peak <= -0.15:
         return Signal(symbol, "SELL", max(0.45, confidence), f"TSMOM negative/drawdown guard: {drawdown_from_peak:.1%} below trailing peak; reduce/avoid", close, r14, s20, s50, vol20, "tsmom", 0.0, evidence)
     if raw_momentum > 0.03 and trend_confirmed and regime_ok:
-        target_weight = _clamp((target_vol / max(vol20, 0.05)) * 0.05, 0.02, 0.20)
+        target_weight = _clamp(target_vol / max(vol20, 0.05), 0.02, 0.20)
         return Signal(symbol, "BUY", max(0.35, confidence), f"TSMOM positive {raw_momentum:.1%}; trend confirmed; vol {vol20:.0%}; next-open candidate only", close, r14, s20, s50, vol20, "tsmom", target_weight, evidence)
     if raw_momentum < -0.03 or (s100 and close < s100):
         return Signal(symbol, "SELL", max(0.30, confidence), f"TSMOM negative/broken regime: momentum {raw_momentum:.1%}, close vs SMA100 {(close / s100 - 1) if s100 else 0:.1%}; reduce/avoid", close, r14, s20, s50, vol20, "tsmom", 0.0, evidence)
