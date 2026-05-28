@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+
+# Market Lab generated data/state
+/data/
+data/market-lab/prices/
+data/market-lab/factors/
+data/market-lab/reports/
+data/market-lab/quarantine/
+data/market-lab/mock_ledger.jsonl
+data/market-lab/mock_portfolio_state.json
+data/market-lab/pending_order_candidates.jsonl
+
+# Build metadata
+*.egg-info/
+
+# Lockfiles
+# Commit uv.lock for reproducible Market Lab app/dev environments.
+
+# Logs and temp
+*.log
+*.tmp

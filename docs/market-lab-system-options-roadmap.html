@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OzLabs Market Lab — Current System + Options Roadmap</title>
+<style>
+  body { margin:0; background:#020617; color:#e2e8f0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  .wrap { max-width:1180px; margin:0 auto; padding:28px; }
+  .hdr { display:flex; align-items:center; gap:12px; margin-bottom:16px; }
+  .dot { width:11px; height:11px; background:#34d399; border-radius:50%; box-shadow:0 0 18px #34d399; }
+  h1 { margin:0; font-size:24px; }
+  .sub { color:#94a3b8; margin:6px 0 22px; }
+  .card { background:#0f172a; border:1px solid #1e293b; border-radius:16px; padding:18px; box-shadow:0 20px 60px rgba(0,0,0,.35); }
+  svg { width:100%; height:auto; display:block; }
+  .cards { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:16px; }
+  .info { background:#0b1220; border:1px solid #1e293b; border-radius:12px; padding:14px; }
+  .info h3 { margin:0 0 8px; font-size:14px; color:#f8fafc; }
+  .info ul { margin:0; padding-left:18px; color:#cbd5e1; font-size:12px; line-height:1.55; }
+  @media(max-width:900px){ .cards{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hdr"><div class="dot"></div><h1>OzLabs Market Lab — Current System + Options Roadmap</h1></div>
+  <div class="sub">Current posture: research-only, clean $100k mock baseline, no broker/live orders. Next posture: paper options research before any broker integration.</div>
+  <div class="card">
+  <svg viewBox="0 0 1120 760" role="img" aria-label="Market Lab architecture diagram">
+    <defs>
+      <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern>
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+      <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#34d399"/></marker>
+      <marker id="arrowRose" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#fb7185"/></marker>
+      <style>
+        .bg{fill:url(#grid)} .boxbg{fill:#0f172a}.txt{font:12px monospace;fill:#e2e8f0}.small{font:10px monospace;fill:#94a3b8}.tiny{font:9px monospace;fill:#cbd5e1}.title{font:14px monospace;font-weight:700;fill:#f8fafc}
+        .external{fill:rgba(30,41,59,.55);stroke:#94a3b8;stroke-width:1.5}.backend{fill:rgba(6,78,59,.45);stroke:#34d399;stroke-width:1.5}.db{fill:rgba(76,29,149,.45);stroke:#a78bfa;stroke-width:1.5}.security{fill:rgba(136,19,55,.40);stroke:#fb7185;stroke-width:1.5}.cloud{fill:rgba(120,53,15,.32);stroke:#fbbf24;stroke-width:1.5}.bus{fill:rgba(251,146,60,.32);stroke:#fb923c;stroke-width:1.5}.future{fill:rgba(8,51,68,.45);stroke:#22d3ee;stroke-width:1.5}
+        .line{stroke:#64748b;stroke-width:2;fill:none;marker-end:url(#arrow)}.greenline{stroke:#34d399;stroke-width:2;fill:none;marker-end:url(#arrowGreen)}.riskline{stroke:#fb7185;stroke-width:2;fill:none;stroke-dasharray:6 5;marker-end:url(#arrowRose)}
+        .boundary{fill:none;stroke:#fbbf24;stroke-width:1.5;stroke-dasharray:8 5;rx:12}.futureboundary{fill:none;stroke:#22d3ee;stroke-width:1.5;stroke-dasharray:8 5;rx:12}
+      </style>
+    </defs>
+    <rect width="1120" height="760" fill="#020617"/><rect width="1120" height="760" class="bg" opacity="0.9"/>
+
+    <!-- boundaries -->
+    <rect x="28" y="46" width="660" height="510" class="boundary" rx="14"/>
+    <text x="48" y="72" class="title">NOW: Market Lab MVP 0 — dry-run research engine</text>
+    <rect x="720" y="46" width="370" height="510" class="futureboundary" rx="14"/>
+    <text x="740" y="72" class="title">NEXT: Options paper engine</text>
+
+    <!-- arrows behind boxes -->
+    <path class="line" d="M145 138 L260 138"/>
+    <path class="line" d="M145 220 L260 220"/>
+    <path class="line" d="M145 300 L260 300"/>
+    <path class="greenline" d="M430 138 L520 138"/>
+    <path class="greenline" d="M430 220 L520 220"/>
+    <path class="greenline" d="M430 300 L520 300"/>
+    <path class="line" d="M590 370 L590 430"/>
+    <path class="greenline" d="M590 430 L590 492"/>
+    <path class="line" d="M610 492 L742 492"/>
+    <path class="riskline" d="M610 138 C680 138 680 150 742 150"/>
+    <path class="riskline" d="M610 220 C690 220 690 250 742 250"/>
+    <path class="riskline" d="M610 300 C692 300 692 350 742 350"/>
+    <path class="line" d="M905 428 L905 490"/>
+
+    <!-- sources -->
+    <rect x="58" y="105" width="115" height="66" rx="6" class="boxbg"/><rect x="58" y="105" width="115" height="66" rx="6" class="external"/><text x="76" y="132" class="txt">yfinance</text><text x="72" y="151" class="small">daily OHLCV</text>
+    <rect x="58" y="187" width="115" height="66" rx="6" class="boxbg"/><rect x="58" y="187" width="115" height="66" rx="6" class="external"/><text x="74" y="214" class="txt">factor info</text><text x="70" y="233" class="small">yfinance_info</text>
+    <rect x="58" y="267" width="115" height="66" rx="6" class="boxbg"/><rect x="58" y="267" width="115" height="66" rx="6" class="external"/><text x="70" y="294" class="txt">local cache</text><text x="75" y="313" class="small">fallback only</text>
+
+    <!-- engine -->
+    <rect x="260" y="96" width="170" height="84" rx="6" class="boxbg"/><rect x="260" y="96" width="170" height="84" rx="6" class="backend"/><text x="286" y="124" class="txt">data/factors</text><text x="281" y="144" class="small">fetch + disclose source</text><text x="287" y="160" class="small">synthetic labeled</text>
+    <rect x="260" y="178" width="170" height="84" rx="6" class="boxbg"/><rect x="260" y="178" width="170" height="84" rx="6" class="backend"/><text x="287" y="206" class="txt">signals</text><text x="281" y="226" class="small">TSMOM / RSI / MA</text><text x="282" y="242" class="small">cross-sectional ranks</text>
+    <rect x="260" y="258" width="170" height="84" rx="6" class="boxbg"/><rect x="260" y="258" width="170" height="84" rx="6" class="backend"/><text x="290" y="286" class="txt">backtests</text><text x="279" y="306" class="small">next-open fills</text><text x="278" y="322" class="small">sanity, not edge claims</text>
+
+    <!-- current outputs -->
+    <rect x="520" y="96" width="150" height="84" rx="6" class="boxbg"/><rect x="520" y="96" width="150" height="84" rx="6" class="db"/><text x="548" y="124" class="txt">reports</text><text x="537" y="144" class="small">latest.md</text><text x="536" y="160" class="small">Telegram delivery</text>
+    <rect x="520" y="178" width="150" height="84" rx="6" class="boxbg"/><rect x="520" y="178" width="150" height="84" rx="6" class="security"/><text x="544" y="206" class="txt">risk gates</text><text x="537" y="226" class="small">no live trading</text><text x="531" y="242" class="small">no options/margin/short</text>
+    <rect x="520" y="258" width="150" height="84" rx="6" class="boxbg"/><rect x="520" y="258" width="150" height="84" rx="6" class="db"/><text x="543" y="286" class="txt">clean state</text><text x="535" y="306" class="small">$100k baseline</text><text x="538" y="322" class="small">0 positions</text>
+    <rect x="520" y="430" width="150" height="84" rx="6" class="boxbg"/><rect x="520" y="430" width="150" height="84" rx="6" class="cloud"/><text x="552" y="458" class="txt">cron</text><text x="532" y="478" class="small">weekdays 14:05 PDT</text><text x="538" y="494" class="small">script-only / no LLM</text>
+
+    <!-- future options -->
+    <rect x="760" y="105" width="290" height="72" rx="6" class="boxbg"/><rect x="760" y="105" width="290" height="72" rx="6" class="future"/><text x="787" y="133" class="txt">1. Options chain ingestion</text><text x="786" y="153" class="small">OptionContract + cache + source timestamps</text>
+    <rect x="760" y="205" width="290" height="72" rx="6" class="boxbg"/><rect x="760" y="205" width="290" height="72" rx="6" class="future"/><text x="787" y="233" class="txt">2. Screeners, report-only</text><text x="786" y="253" class="small">covered calls + cash-secured puts</text>
+    <rect x="760" y="305" width="290" height="72" rx="6" class="boxbg"/><rect x="760" y="305" width="290" height="72" rx="6" class="future"/><text x="787" y="333" class="txt">3. Paper options ledger</text><text x="786" y="353" class="small">reserve shares/cash, expiration, assignment</text>
+    <rect x="760" y="427" width="290" height="72" rx="6" class="boxbg"/><rect x="760" y="427" width="290" height="72" rx="6" class="security"/><text x="787" y="455" class="txt">4. Broker later, gated</text><text x="786" y="475" class="small">read-only → approval tickets → limited autonomy</text>
+
+    <!-- guardrails bottom -->
+    <rect x="48" y="592" width="1042" height="92" rx="10" class="boxbg"/><rect x="48" y="592" width="1042" height="92" rx="10" class="security"/>
+    <text x="70" y="622" class="title">Non-negotiable guardrails for options</text>
+    <text x="70" y="648" class="txt">No naked calls • No margin • No autonomous live orders • Liquidity gates first • Assignment risk explicit</text>
+    <text x="70" y="670" class="txt">Paper evidence before broker execution • Ronak approval required for any live order path</text>
+    <text x="70" y="692" class="small">Ozzy default implementation: options research + paper simulator first; live trading comes only after hard limits + kill switch.</text>
+
+    <!-- labels -->
+    <text x="50" y="730" class="tiny">Legend: slate=external data, green=Market Lab code, violet=artifacts/state, rose=risk guardrails, cyan=next build, amber=schedule.</text>
+  </svg>
+  </div>
+  <div class="cards">
+    <div class="info"><h3>Current system</h3><ul><li>Daily research report, not trading.</li><li>Clean mock baseline: $100k, 0 positions.</li><li>After-close cron sends report to Telegram.</li></ul></div>
+    <div class="info"><h3>Next build slice</h3><ul><li>Add options chain ingestion.</li><li>Add covered-call/CSP screeners.</li><li>Integrate options section into report.</li></ul></div>
+    <div class="info"><h3>Safety ladder</h3><ul><li>Research → paper options → read-only broker.</li><li>Approval-required tickets only after evidence.</li><li>No live autonomy until hard limits + kill switch.</li></ul></div>
+  </div>
+</div>
+</body>
+</html>

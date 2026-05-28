@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+import csv
+import math
+import random
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Iterable
+
+from .config import PRICE_DIR, ensure_dirs
+
+@dataclass(frozen=True)
+class Bar:
+    date: date
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+    def as_row(self) -> dict[str, str]:
+        return {
+            "date": self.date.isoformat(),
+            "open": f"{self.open:.4f}",
+            "high": f"{self.high:.4f}",
+            "low": f"{self.low:.4f}",
+            "close": f"{self.close:.4f}",
+            "volume": str(int(self.volume)),
+        }
+
+def price_path(symbol: str) -> Path:
+    safe = symbol.upper().replace("/", "_").replace("-", "_")
+    return PRICE_DIR / f"{safe}.csv"
+
+def load_cached_prices(symbol: str) -> list[Bar]:
+    path = price_path(symbol)
+    if not path.exists():
+        return []
+    bars: list[Bar] = []
+    with path.open(newline="") as f:
+        for row in csv.DictReader(f):
+            bars.append(Bar(
+                date=datetime.strptime(row["date"], "%Y-%m-%d").date(),
+                open=float(row["open"]), high=float(row["high"]), low=float(row["low"]),
+                close=float(row["close"]), volume=int(float(row["volume"])),
+            ))
+    return bars
+
+def save_prices(symbol: str, bars: Iterable[Bar]) -> Path:
+    ensure_dirs()
+    path = price_path(symbol)
+    rows = sorted({b.date: b for b in bars}.values(), key=lambda b: b.date)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["date", "open", "high", "low", "close", "volume"])
+        writer.writeheader()
+        for bar in rows:
+            writer.writerow(bar.as_row())
+    return path
+
+def _synthetic_prices(symbol: str, days: int = 260, end: date | None = None) -> list[Bar]:
+    # Deterministic fallback so tests/reports work without network or yfinance.
+    end = end or date.today()
+    rng = random.Random(sum(ord(c) for c in symbol.upper()))
+    base = 50 + (sum(ord(c) for c in symbol.upper()) % 250)
+    drift = rng.uniform(-0.0002, 0.0012)
+    vol = rng.uniform(0.012, 0.035)
+    price = float(base)
+    bars: list[Bar] = []
+    d = end - timedelta(days=days * 2)
+    while len(bars) < days:
+        if d.weekday() < 5:
+            shock = rng.gauss(drift, vol)
+            prev = price
+            price = max(2.0, price * math.exp(shock))
+            high = max(prev, price) * (1 + abs(rng.gauss(0, vol / 3)))
+            low = min(prev, price) * (1 - abs(rng.gauss(0, vol / 3)))
+            bars.append(Bar(d, prev, high, max(0.01, low), price, rng.randint(500_000, 80_000_000)))
+        d += timedelta(days=1)
+    return bars
+
+def fetch_prices(symbol: str, days: int = 260, prefer_network: bool = True, max_cache_age_days: int = 3) -> tuple[list[Bar], str]:
+    ensure_dirs()
+    if prefer_network:
+        try:
+            import yfinance as yf  # type: ignore
+            period = f"{max(days + 30, 60)}d"
+            frame = yf.download(symbol, period=period, interval="1d", progress=False, auto_adjust=True)
+            if frame is not None and not frame.empty:
+                bars=[]
+                def scalar(value):
+                    # yfinance can return scalar values or one-element Series depending on pandas/yf versions.
+                    if hasattr(value, "iloc"):
+                        return value.iloc[0]
+                    return value
+                for idx, row in frame.tail(days).iterrows():
+                    bars.append(Bar(
+                        date=idx.date(),
+                        open=float(scalar(row["Open"])), high=float(scalar(row["High"])), low=float(scalar(row["Low"])),
+                        close=float(scalar(row["Close"])), volume=int(scalar(row.get("Volume", 0)) or 0),
+                    ))
+                save_prices(symbol, bars)
+                return bars, "yfinance"
+        except Exception:
+            pass
+    cached = load_cached_prices(symbol)
+    if len(cached) >= min(days, 30):
+        newest = cached[-1].date
+        if newest >= date.today() - timedelta(days=max_cache_age_days):
+            return cached[-days:], "cache"
+    bars = _synthetic_prices(symbol, days=days)
+    save_prices(symbol, bars)
+    return bars, "synthetic"
+
+def latest_close(bars: list[Bar]) -> float:
+    if not bars:
+        raise ValueError("No bars available")
+    return bars[-1].close
