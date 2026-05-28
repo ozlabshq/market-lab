@@ -44,5 +44,13 @@ class BrokerTests(unittest.TestCase):
             self.assertTrue(d.accepted)
             self.assertTrue(state.exists()); self.assertTrue(ledger.exists())
             self.assertEqual(load_portfolio(state).positions["SPY"].quantity, 10)
+    def test_place_mock_order_creates_custom_parent_dirs(self):
+        with tempfile.TemporaryDirectory() as td:
+            state=Path(td)/"nested"/"state"/"portfolio.json"
+            ledger=Path(td)/"nested"/"ledger"/"orders.jsonl"
+            d=place_mock_order("BUY", "SPY", 10, 100, {"SPY":100}, state, ledger)
+            self.assertTrue(d.accepted)
+            self.assertTrue(state.exists())
+            self.assertTrue(ledger.exists())
 
 if __name__ == '__main__': unittest.main()

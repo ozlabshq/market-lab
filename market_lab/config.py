@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "data" / "market-lab"
+DATA_DIR = Path(os.environ.get("MARKET_LAB_DATA_DIR", ROOT / "data" / "market-lab")).expanduser().resolve()
 PRICE_DIR = DATA_DIR / "prices"
+SYNTHETIC_PRICE_DIR = DATA_DIR / "synthetic_prices"
 REPORT_DIR = DATA_DIR / "reports"
 FACTOR_DIR = DATA_DIR / "factors"
 LEDGER_PATH = DATA_DIR / "mock_ledger.jsonl"
@@ -36,5 +38,5 @@ class RiskConfig:
 RISK = RiskConfig()
 
 def ensure_dirs() -> None:
-    for path in (DATA_DIR, PRICE_DIR, REPORT_DIR, FACTOR_DIR):
+    for path in (DATA_DIR, PRICE_DIR, SYNTHETIC_PRICE_DIR, REPORT_DIR, FACTOR_DIR):
         path.mkdir(parents=True, exist_ok=True)
