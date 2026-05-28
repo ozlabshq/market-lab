@@ -34,6 +34,24 @@ class ResearchStrategyTests(unittest.TestCase):
         self.assertEqual(sig.action, "SELL")
         self.assertIn("negative", sig.reason.lower())
 
+    def test_tsmom_drawdown_guard_exits_deep_pullback(self):
+        prices = [100 + i * 0.45 for i in range(150)] + [167 - i * 1.4 for i in range(30)]
+        sig = generate_tsmom_signal("DD", bars_from_prices(prices))
+        self.assertEqual(sig.action, "SELL")
+        self.assertIn("drawdown", sig.reason.lower())
+        drawdown = sig.evidence["drawdown_from_peak"]
+        self.assertIsInstance(drawdown, float)
+        self.assertLess(drawdown, -0.15)
+
+    def test_tsmom_target_weight_scales_down_in_higher_volatility(self):
+        low_vol = [100 + i * 0.30 for i in range(180)]
+        high_vol = [100 + i * 0.30 + (1.5 if i % 2 == 0 else -1.5) for i in range(180)]
+        low_sig = generate_tsmom_signal("LOWVOL", bars_from_prices(low_vol))
+        high_sig = generate_tsmom_signal("HIGHVOL", bars_from_prices(high_vol))
+        self.assertEqual(low_sig.action, "BUY")
+        self.assertEqual(high_sig.action, "BUY")
+        self.assertGreater(low_sig.target_weight, high_sig.target_weight)
+
     def test_cross_sectional_momentum_uses_one_month_skip(self):
         steady_winner = [100 + i * 0.40 for i in range(180)]
         recent_spike_loser = [120 - i * 0.25 for i in range(160)] + [90 + i * 2.0 for i in range(20)]
