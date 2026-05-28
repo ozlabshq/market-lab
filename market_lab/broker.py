@@ -1,12 +1,46 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
 from .config import LEDGER_PATH, PENDING_CANDIDATES_PATH, STATE_PATH, RiskConfig, RISK, ensure_dirs
+
+@contextmanager
+def _portfolio_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("w") as lock_file:
+        locked = False
+        try:
+            try:
+                import fcntl  # type: ignore
+            except ModuleNotFoundError:
+                fcntl = None  # type: ignore[assignment]
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                locked = True
+            yield
+        finally:
+            if locked:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)  # type: ignore[union-attr]
+                except Exception:
+                    pass
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as tmp:
+        tmp.write(text)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp_path = Path(tmp.name)
+    os.replace(tmp_path, path)
 
 Side = Literal["BUY", "SELL"]
 
@@ -69,15 +103,17 @@ def load_portfolio(path: Path = STATE_PATH) -> Portfolio:
 def save_portfolio(portfolio: Portfolio, path: Path = STATE_PATH) -> None:
     ensure_dirs()
     data={"cash": portfolio.cash, "positions": {k: asdict(v) for k,v in portfolio.positions.items() if v.quantity != 0}}
-    path.write_text(json.dumps(data, indent=2, sort_keys=True))
+    _atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True))
 
 def append_ledger(decision: OrderDecision, path: Path = LEDGER_PATH) -> None:
     ensure_dirs()
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as f:
         f.write(json.dumps(asdict(decision), sort_keys=True) + "\n")
 
 def append_order_candidates(candidates: list[OrderCandidate], path: Path = PENDING_CANDIDATES_PATH) -> None:
     ensure_dirs()
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as f:
         for candidate in candidates:
             f.write(json.dumps(asdict(candidate), sort_keys=True) + "\n")
@@ -99,11 +135,10 @@ def load_order_candidates(path: Path = PENDING_CANDIDATES_PATH) -> list[OrderCan
 def save_order_candidates(candidates: list[OrderCandidate], path: Path = PENDING_CANDIDATES_PATH) -> None:
     ensure_dirs()
     if not candidates:
-        path.write_text("")
+        _atomic_write_text(path, "")
         return
-    with path.open("w") as f:
-        for candidate in candidates:
-            f.write(json.dumps(asdict(candidate), sort_keys=True) + "\n")
+    text = "".join(json.dumps(asdict(candidate), sort_keys=True) + "\n" for candidate in candidates)
+    _atomic_write_text(path, text)
 
 def candidate_to_order_at_open(candidate: OrderCandidate, next_open: float, prices: dict[str, float], portfolio_path: Path = STATE_PATH, ledger_path: Path = LEDGER_PATH) -> OrderDecision:
     return place_mock_order(candidate.side, candidate.symbol, candidate.quantity, next_open, prices, portfolio_path, ledger_path)
@@ -153,9 +188,10 @@ def evaluate_order(portfolio: Portfolio, side: Side, symbol: str, quantity: int,
     return OrderDecision(True, side, symbol, quantity, price, fill, "accepted by mock broker", now)
 
 def place_mock_order(side: Side, symbol: str, quantity: int, price: float, prices: dict[str, float], portfolio_path: Path = STATE_PATH, ledger_path: Path = LEDGER_PATH) -> OrderDecision:
-    portfolio=load_portfolio(portfolio_path)
-    decision=evaluate_order(portfolio, side, symbol, quantity, price, prices)
-    append_ledger(decision, ledger_path)
-    if decision.accepted:
-        save_portfolio(portfolio, portfolio_path)
-    return decision
+    with _portfolio_lock(portfolio_path):
+        portfolio=load_portfolio(portfolio_path)
+        decision=evaluate_order(portfolio, side, symbol, quantity, price, prices)
+        append_ledger(decision, ledger_path)
+        if decision.accepted:
+            save_portfolio(portfolio, portfolio_path)
+        return decision

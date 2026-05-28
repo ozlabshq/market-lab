@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
-from .config import PRICE_DIR, ensure_dirs
+from .config import PRICE_DIR, SYNTHETIC_PRICE_DIR, ensure_dirs
 
 @dataclass(frozen=True)
 class Bar:
@@ -33,8 +33,11 @@ def price_path(symbol: str) -> Path:
     safe = symbol.upper().replace("/", "_").replace("-", "_")
     return PRICE_DIR / f"{safe}.csv"
 
-def load_cached_prices(symbol: str) -> list[Bar]:
-    path = price_path(symbol)
+def synthetic_price_path(symbol: str) -> Path:
+    safe = symbol.upper().replace("/", "_").replace("-", "_")
+    return SYNTHETIC_PRICE_DIR / f"{safe}.csv"
+
+def _load_prices_from_path(path: Path) -> list[Bar]:
     if not path.exists():
         return []
     bars: list[Bar] = []
@@ -47,9 +50,21 @@ def load_cached_prices(symbol: str) -> list[Bar]:
             ))
     return bars
 
+def load_cached_prices(symbol: str) -> list[Bar]:
+    return _load_prices_from_path(price_path(symbol))
+
+def load_cached_synthetic_prices(symbol: str) -> list[Bar]:
+    return _load_prices_from_path(synthetic_price_path(symbol))
+
 def save_prices(symbol: str, bars: Iterable[Bar]) -> Path:
+    return _save_prices_to_path(price_path(symbol), bars)
+
+def save_synthetic_prices(symbol: str, bars: Iterable[Bar]) -> Path:
+    return _save_prices_to_path(synthetic_price_path(symbol), bars)
+
+def _save_prices_to_path(path: Path, bars: Iterable[Bar]) -> Path:
     ensure_dirs()
-    path = price_path(symbol)
+    path.parent.mkdir(parents=True, exist_ok=True)
     rows = sorted({b.date: b for b in bars}.values(), key=lambda b: b.date)
     with path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["date", "open", "high", "low", "close", "volume"])
@@ -108,8 +123,13 @@ def fetch_prices(symbol: str, days: int = 260, prefer_network: bool = True, max_
         newest = cached[-1].date
         if newest >= date.today() - timedelta(days=max_cache_age_days):
             return cached[-days:], "cache"
+    synthetic_cached = load_cached_synthetic_prices(symbol)
+    if len(synthetic_cached) >= min(days, 30):
+        newest = synthetic_cached[-1].date
+        if newest >= date.today() - timedelta(days=max_cache_age_days):
+            return synthetic_cached[-days:], "cache_synthetic"
     bars = _synthetic_prices(symbol, days=days)
-    save_prices(symbol, bars)
+    save_synthetic_prices(symbol, bars)
     return bars, "synthetic"
 
 def latest_close(bars: list[Bar]) -> float:
