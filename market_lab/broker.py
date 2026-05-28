@@ -16,16 +16,22 @@ def _portfolio_lock(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
     with lock_path.open("w") as lock_file:
+        locked = False
         try:
-            import fcntl  # type: ignore
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            yield
-        finally:
             try:
                 import fcntl  # type: ignore
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            except Exception:
-                pass
+            except ModuleNotFoundError:
+                fcntl = None  # type: ignore[assignment]
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                locked = True
+            yield
+        finally:
+            if locked:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)  # type: ignore[union-attr]
+                except Exception:
+                    pass
 
 def _atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

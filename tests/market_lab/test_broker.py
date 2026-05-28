@@ -1,5 +1,7 @@
+import builtins
 import tempfile, unittest
 from pathlib import Path
+from unittest.mock import patch
 from market_lab.broker import Portfolio, Position, evaluate_order, place_mock_order, load_portfolio
 from market_lab.config import RiskConfig
 
@@ -48,6 +50,18 @@ class BrokerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             state=Path(td)/"nested"/"state"/"portfolio.json"
             ledger=Path(td)/"nested"/"ledger"/"orders.jsonl"
+            d=place_mock_order("BUY", "SPY", 10, 100, {"SPY":100}, state, ledger)
+            self.assertTrue(d.accepted)
+            self.assertTrue(state.exists())
+            self.assertTrue(ledger.exists())
+    def test_place_mock_order_gracefully_degrades_without_fcntl(self):
+        original_import = builtins.__import__
+        def fake_import(name, *args, **kwargs):
+            if name == "fcntl":
+                raise ModuleNotFoundError("No module named 'fcntl'")
+            return original_import(name, *args, **kwargs)
+        with tempfile.TemporaryDirectory() as td, patch("builtins.__import__", side_effect=fake_import):
+            state=Path(td)/"state.json"; ledger=Path(td)/"ledger.jsonl"
             d=place_mock_order("BUY", "SPY", 10, 100, {"SPY":100}, state, ledger)
             self.assertTrue(d.accepted)
             self.assertTrue(state.exists())
