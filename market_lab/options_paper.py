@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -20,6 +20,7 @@ class OptionPaperOrder:
     contracts: int
     price: float
     strategy: str
+    as_of: str | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,25 @@ def _accept(order: OptionPaperOrder, premium: float, reason: str) -> OptionPaper
     return OptionPaperDecision(True, order.action, order.contract.contract_id, order.contracts, order.price, premium, reason, datetime.now(timezone.utc).isoformat(), order.strategy)
 
 
+def _opening_guardrail_violation(paper: OptionPaperPortfolio, order: OptionPaperOrder, risk: OptionsRiskConfig) -> str | None:
+    contract = order.contract
+    q = contract.quote
+    as_of = order.as_of or date.today().isoformat()
+    dte = contract.dte(as_of)
+    if not (risk.min_dte <= dte <= risk.max_dte):
+        return "option DTE outside configured paper gate"
+    if q.bid <= 0 or q.ask < q.bid or q.spread_pct > risk.max_bid_ask_spread_pct or q.open_interest < risk.min_open_interest or q.volume < risk.min_volume:
+        return "option liquidity/spread outside configured paper gate"
+    if order.action == "SELL_TO_OPEN" and contract.option_type == "CALL" and abs(contract.greeks.delta) > risk.max_abs_short_call_delta:
+        return "short call delta exceeds configured paper gate"
+    if order.action == "SELL_TO_OPEN" and contract.option_type == "PUT" and abs(contract.greeks.delta) > risk.max_abs_short_put_delta:
+        return "short put delta exceeds configured paper gate"
+    existing_for_underlying = sum(abs(qty) for cid, qty in paper.positions.items() if cid.startswith(f"{contract.underlying.upper()}-") and qty != 0)
+    if existing_for_underlying + order.contracts > risk.max_contracts_per_symbol:
+        return "contract count exceeds per-symbol gate including existing positions"
+    return None
+
+
 def evaluate_option_paper_order(paper: OptionPaperPortfolio, equity_portfolio: Portfolio, order: OptionPaperOrder, risk: OptionsRiskConfig = OPTIONS_RISK) -> OptionPaperDecision:
     if not risk.allow_options or not risk.paper_options_enabled or risk.live_options_enabled:
         return _reject(order, "paper options are disabled or live options unexpectedly enabled")
@@ -66,6 +86,11 @@ def evaluate_option_paper_order(paper: OptionPaperPortfolio, equity_portfolio: P
     contract = order.contract
     premium = order.price * 100 * order.contracts
     cid = contract.contract_id
+
+    if order.action in ("BUY_TO_OPEN", "SELL_TO_OPEN"):
+        violation = _opening_guardrail_violation(paper, order, risk)
+        if violation:
+            return _reject(order, violation)
 
     if order.action == "BUY_TO_OPEN":
         account_equity = max(equity_portfolio.equity({contract.underlying: contract.strike}), paper.cash, 1.0)

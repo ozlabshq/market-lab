@@ -28,7 +28,7 @@ from market_lab.webapp import build_dashboard_snapshot, render_dashboard_html
 
 
 def sample_snapshot(symbol="SPY"):
-    today = date(2026, 1, 2)
+    today = date.today()
     expiry = today + timedelta(days=35)
     return OptionChainSnapshot(
         underlying=symbol,
@@ -76,7 +76,7 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertEqual(screen_cash_secured_puts(sample_snapshot(), portfolio, risk), [])
 
     def test_paper_options_portfolio_reserves_cash_and_shares_for_defined_risk_shorts(self):
-        risk = OptionsRiskConfig(paper_options_enabled=True)
+        risk = OptionsRiskConfig(paper_options_enabled=True, max_contracts_per_symbol=2)
         equity_portfolio = Portfolio(cash=20_000, positions={"SPY": Position("SPY", 100, 90.0)})
         paper = OptionPaperPortfolio(cash=20_000)
         snapshot = sample_snapshot()
@@ -198,6 +198,22 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertIn("SPY", text)
         self.assertIn("CALL", text)
         self.assertIn("PUT", text)
+    def test_paper_order_gate_rejects_repeated_opens_and_bad_contract_quality(self):
+        risk = OptionsRiskConfig(allow_options=True, paper_options_enabled=True, max_contracts_per_symbol=1)
+        call = sample_snapshot().contracts[0]
+        paper = OptionPaperPortfolio(cash=100_000)
+        equity = Portfolio(cash=100_000, positions={"SPY": Position("SPY", 200, 90.0)})
+
+        first = evaluate_option_paper_order(paper, equity, OptionPaperOrder("SELL_TO_OPEN", call, 1, call.quote.mid, "covered_call", sample_snapshot().as_of), risk)
+        second = evaluate_option_paper_order(paper, equity, OptionPaperOrder("SELL_TO_OPEN", call, 1, call.quote.mid, "covered_call", sample_snapshot().as_of), risk)
+        self.assertTrue(first.accepted, first.reason)
+        self.assertFalse(second.accepted)
+        self.assertIn("per-symbol", second.reason)
+
+        bad_quote = OptionContract(call.underlying, call.expiration, call.strike, "CALL", OptionQuote(0.1, 1.0, 0.55, 0, 0), call.greeks)
+        rejected = evaluate_option_paper_order(OptionPaperPortfolio(cash=100_000), equity, OptionPaperOrder("BUY_TO_OPEN", bad_quote, 1, bad_quote.quote.mid, "long_call", sample_snapshot().as_of), risk)
+        self.assertFalse(rejected.accepted)
+        self.assertIn("liquidity", rejected.reason)
 
 
 if __name__ == "__main__":
