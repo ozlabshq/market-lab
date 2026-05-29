@@ -10,6 +10,7 @@ PRICE_DIR = DATA_DIR / "prices"
 SYNTHETIC_PRICE_DIR = DATA_DIR / "synthetic_prices"
 REPORT_DIR = DATA_DIR / "reports"
 FACTOR_DIR = DATA_DIR / "factors"
+EVIDENCE_DIR = DATA_DIR / "evidence"
 LEDGER_PATH = DATA_DIR / "mock_ledger.jsonl"
 PENDING_CANDIDATES_PATH = DATA_DIR / "pending_order_candidates.jsonl"
 STATE_PATH = DATA_DIR / "mock_portfolio_state.json"
@@ -38,5 +39,5 @@ class RiskConfig:
 RISK = RiskConfig()
 
 def ensure_dirs() -> None:
-    for path in (DATA_DIR, PRICE_DIR, SYNTHETIC_PRICE_DIR, REPORT_DIR, FACTOR_DIR):
+    for path in (DATA_DIR, PRICE_DIR, SYNTHETIC_PRICE_DIR, REPORT_DIR, FACTOR_DIR, EVIDENCE_DIR):
         path.mkdir(parents=True, exist_ok=True)
