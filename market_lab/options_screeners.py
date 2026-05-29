@@ -80,8 +80,10 @@ def screen_cash_secured_puts(snapshot: OptionChainSnapshot, portfolio: Portfolio
         annualized = premium / max(cash_reserved, 1) * (365 / dte)
         if annualized < risk.min_premium_yield_annualized:
             continue
-        max_assignment = portfolio.equity({snapshot.underlying: snapshot.underlying_price}) * risk.max_assignment_notional_pct
-        max_contracts_by_assignment = int(max_assignment // cash_reserved)
+        equity = portfolio.equity({snapshot.underlying: snapshot.underlying_price})
+        max_assignment = equity * risk.max_assignment_notional_pct
+        max_total_assignment = equity * risk.max_total_options_assignment_pct
+        max_contracts_by_assignment = int(min(max_assignment, max_total_assignment) // cash_reserved)
         max_contracts_by_cash = int(portfolio.cash // cash_reserved)
         contracts = min(max_contracts_by_cash, max_contracts_by_assignment, risk.max_contracts_per_symbol)
         if contracts <= 0:

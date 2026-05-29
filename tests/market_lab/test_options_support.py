@@ -245,6 +245,16 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertIn("SELL_TO_CLOSE", decision.reason)
         self.assertEqual(paper.positions[call.contract_id], 1)
         self.assertEqual(paper.reserved_shares, {})
+    def test_cash_secured_put_screener_respects_total_assignment_cap(self):
+        snapshot = sample_snapshot()
+        risk = OptionsRiskConfig(allow_options=True, paper_options_enabled=True, max_contracts_per_symbol=5, max_assignment_notional_pct=0.60, max_total_options_assignment_pct=0.20)
+        portfolio = Portfolio(cash=100_000)
+
+        puts = screen_cash_secured_puts(snapshot, portfolio, risk)
+
+        self.assertEqual(len(puts), 1)
+        self.assertEqual(puts[0].contracts, 2)
+        self.assertLessEqual(puts[0].cash_reserved, portfolio.equity({"SPY": 100}) * risk.max_total_options_assignment_pct)
 
 
 if __name__ == "__main__":
