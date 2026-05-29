@@ -214,6 +214,13 @@ class OptionsSupportTests(unittest.TestCase):
         rejected = evaluate_option_paper_order(OptionPaperPortfolio(cash=100_000), equity, OptionPaperOrder("BUY_TO_OPEN", bad_quote, 1, bad_quote.quote.mid, "long_call", sample_snapshot().as_of), risk)
         self.assertFalse(rejected.accepted)
         self.assertIn("liquidity", rejected.reason)
+    def test_global_risk_and_options_risk_defaults_enable_paper_but_not_live_options(self):
+        from market_lab.config import RISK, OPTIONS_RISK
+        self.assertTrue(RISK.allow_options)
+        self.assertTrue(OPTIONS_RISK.allow_options)
+        self.assertTrue(OPTIONS_RISK.paper_options_enabled)
+        self.assertFalse(RISK.live_trading_enabled)
+        self.assertFalse(OPTIONS_RISK.live_options_enabled)
 
 
 if __name__ == "__main__":

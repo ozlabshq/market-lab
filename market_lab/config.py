@@ -36,7 +36,7 @@ class RiskConfig:
     commission_per_trade: float = 1.00
     slippage_bps: float = 5.0
     allow_short: bool = False
-    allow_options: bool = False
+    allow_options: bool = True
     allow_margin: bool = False
     live_trading_enabled: bool = False
 
