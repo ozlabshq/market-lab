@@ -233,6 +233,18 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertFalse(decision.accepted)
         self.assertIn("per-trade assignment", decision.reason)
         self.assertEqual(paper.reserved_cash, 0)
+    def test_opening_order_cannot_offset_existing_opposite_option_position(self):
+        call = sample_snapshot().contracts[0]
+        risk = OptionsRiskConfig(allow_options=True, paper_options_enabled=True, max_contracts_per_symbol=2)
+        paper = OptionPaperPortfolio(cash=100_000, positions={call.contract_id: 1}, avg_price={call.contract_id: call.quote.mid})
+        equity = Portfolio(cash=100_000, positions={"SPY": Position("SPY", 100, 90.0)})
+
+        decision = evaluate_option_paper_order(paper, equity, OptionPaperOrder("SELL_TO_OPEN", call, 1, call.quote.mid, "covered_call", sample_snapshot().as_of), risk)
+
+        self.assertFalse(decision.accepted)
+        self.assertIn("SELL_TO_CLOSE", decision.reason)
+        self.assertEqual(paper.positions[call.contract_id], 1)
+        self.assertEqual(paper.reserved_shares, {})
 
 
 if __name__ == "__main__":

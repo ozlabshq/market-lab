@@ -88,6 +88,11 @@ def evaluate_option_paper_order(paper: OptionPaperPortfolio, equity_portfolio: P
     cid = contract.contract_id
 
     if order.action in ("BUY_TO_OPEN", "SELL_TO_OPEN"):
+        existing_same_contract = paper.positions.get(cid, 0)
+        if order.action == "BUY_TO_OPEN" and existing_same_contract < 0:
+            return _reject(order, "use BUY_TO_CLOSE to reduce an existing short option position")
+        if order.action == "SELL_TO_OPEN" and existing_same_contract > 0:
+            return _reject(order, "use SELL_TO_CLOSE to reduce an existing long option position")
         violation = _opening_guardrail_violation(paper, order, risk)
         if violation:
             return _reject(order, violation)
