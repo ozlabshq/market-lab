@@ -76,7 +76,7 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertEqual(screen_cash_secured_puts(sample_snapshot(), portfolio, risk), [])
 
     def test_paper_options_portfolio_reserves_cash_and_shares_for_defined_risk_shorts(self):
-        risk = OptionsRiskConfig(paper_options_enabled=True, max_contracts_per_symbol=2)
+        risk = OptionsRiskConfig(paper_options_enabled=True, max_contracts_per_symbol=2, max_assignment_notional_pct=0.60)
         equity_portfolio = Portfolio(cash=20_000, positions={"SPY": Position("SPY", 100, 90.0)})
         paper = OptionPaperPortfolio(cash=20_000)
         snapshot = sample_snapshot()
@@ -221,6 +221,18 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertTrue(OPTIONS_RISK.paper_options_enabled)
         self.assertFalse(RISK.live_trading_enabled)
         self.assertFalse(OPTIONS_RISK.live_options_enabled)
+    def test_direct_cash_secured_put_order_enforces_per_trade_assignment_cap(self):
+        put = sample_snapshot().contracts[1]
+        risk = OptionsRiskConfig(allow_options=True, paper_options_enabled=True, max_contracts_per_symbol=5, max_assignment_notional_pct=0.20, max_total_options_assignment_pct=0.50)
+        paper = OptionPaperPortfolio(cash=100_000)
+        equity = Portfolio(cash=100_000)
+        oversized = OptionPaperOrder("SELL_TO_OPEN", put, 3, put.quote.mid, "cash_secured_put", sample_snapshot().as_of)
+
+        decision = evaluate_option_paper_order(paper, equity, oversized, risk)
+
+        self.assertFalse(decision.accepted)
+        self.assertIn("per-trade assignment", decision.reason)
+        self.assertEqual(paper.reserved_cash, 0)
 
 
 if __name__ == "__main__":

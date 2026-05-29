@@ -120,6 +120,8 @@ def evaluate_option_paper_order(paper: OptionPaperPortfolio, equity_portfolio: P
                 return _reject(order, "insufficient available cash for reserved cash-secured put")
             projected_reserved = paper.reserved_cash + reserve
             assignment_base = max(equity_portfolio.equity({contract.underlying: contract.strike}), paper.cash, 1.0)
+            if reserve > assignment_base * risk.max_assignment_notional_pct:
+                return _reject(order, "single cash-secured put reserve exceeds per-trade assignment gate")
             if projected_reserved > assignment_base * risk.max_total_options_assignment_pct:
                 return _reject(order, "total options assignment reserve exceeds portfolio gate")
             paper.reserved_cash = projected_reserved
