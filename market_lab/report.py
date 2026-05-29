@@ -8,6 +8,7 @@ from .broker import OrderCandidate, OrderDecision, Portfolio
 from .config import REPORT_DIR, ensure_dirs
 from .factors import FactorSnapshot
 from .signals import CrossSectionalRank, Signal, rank_signals
+from .options_screeners import CashSecuredPutCandidate, CoveredCallCandidate
 
 
 def render_report(
@@ -21,12 +22,14 @@ def render_report(
     family_signals: dict[str, list[Signal]] | None = None,
     cross_sectional: list[CrossSectionalRank] | None = None,
     factor_snapshots: dict[str, FactorSnapshot] | None = None,
+    options_research: dict[str, list[CoveredCallCandidate] | list[CashSecuredPutCandidate] | list[str]] | None = None,
 ) -> str:
     ensure_dirs()
     candidates = candidates or []
     family_signals = family_signals or {}
     cross_sectional = cross_sectional or []
     factor_snapshots = factor_snapshots or {}
+    options_research = options_research or {"covered_calls": [], "cash_secured_puts": [], "warnings": []}
     now = datetime.now().strftime("%Y-%m-%d %H:%M %Z")
     buys = [s for s in rank_signals(signals) if s.action == "BUY"][:8]
     holds = [s for s in rank_signals(signals) if s.action == "HOLD"][:8]
@@ -95,6 +98,27 @@ def render_report(
     lines += ["", "## Backtest sanity checks — not edge claims"]
     for b in sorted(backtests, key=lambda x: x.total_return, reverse=True)[:12]:
         lines.append(f"- {b.symbol} / {b.strategy}: strategy {b.total_return:.1%}, buy/hold {b.benchmark_return:.1%}, MDD {b.max_drawdown:.1%}, Sharpe {b.sharpe:.2f}, trades {b.trades}")
+
+    lines += ["", "## Options Research — Paper Only"]
+    lines.append("- Status: options live trading disabled; candidates are research/paper only")
+    cc = options_research.get("covered_calls", [])
+    csp = options_research.get("cash_secured_puts", [])
+    warnings = options_research.get("warnings", [])
+    lines += ["", "### Covered Call Candidates"]
+    if not cc:
+        lines.append("- None passed guardrails")
+    for c in cc[:8]:
+        lines.append(f"- {c.contract.underlying} {c.contract.expiration} ${c.contract.strike:.2f} CALL x{c.contracts}: premium ${c.premium:,.2f}, annualized {c.annualized_yield:.1%}, OTM {c.otm_pct:.1%}, delta {c.contract.greeks.delta:.2f}; {c.reason}")
+    lines += ["", "### Cash-Secured Put Candidates"]
+    if not csp:
+        lines.append("- None passed guardrails")
+    for p in csp[:8]:
+        lines.append(f"- {p.contract.underlying} {p.contract.expiration} ${p.contract.strike:.2f} PUT x{p.contracts}: reserve ${p.cash_reserved:,.2f}, premium ${p.premium:,.2f}, annualized {p.annualized_yield:.1%}, OTM {p.otm_pct:.1%}, delta {p.contract.greeks.delta:.2f}; {p.reason}")
+    lines += ["", "### Liquidity / Guardrail Warnings"]
+    if not warnings:
+        lines.append("- None")
+    for w in warnings[:10]:
+        lines.append(f"- {w}")
 
     lines += ["", "## Next-session order candidates queued"]
     if not candidates:

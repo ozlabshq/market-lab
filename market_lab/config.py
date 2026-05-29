@@ -11,6 +11,10 @@ SYNTHETIC_PRICE_DIR = DATA_DIR / "synthetic_prices"
 REPORT_DIR = DATA_DIR / "reports"
 FACTOR_DIR = DATA_DIR / "factors"
 EVIDENCE_DIR = DATA_DIR / "evidence"
+OPTIONS_DIR = DATA_DIR / "options"
+OPTIONS_CHAIN_DIR = OPTIONS_DIR / "chains"
+OPTIONS_PAPER_STATE_PATH = OPTIONS_DIR / "paper_options_state.json"
+OPTIONS_PAPER_LEDGER_PATH = OPTIONS_DIR / "paper_options_ledger.jsonl"
 LEDGER_PATH = DATA_DIR / "mock_ledger.jsonl"
 PENDING_CANDIDATES_PATH = DATA_DIR / "pending_order_candidates.jsonl"
 STATE_PATH = DATA_DIR / "mock_portfolio_state.json"
@@ -36,8 +40,29 @@ class RiskConfig:
     allow_margin: bool = False
     live_trading_enabled: bool = False
 
+@dataclass(frozen=True)
+class OptionsRiskConfig:
+    allow_options: bool = False
+    paper_options_enabled: bool = False
+    live_options_enabled: bool = False
+    allow_margin: bool = False
+    allow_naked_calls: bool = False
+    min_dte: int = 14
+    max_dte: int = 60
+    max_bid_ask_spread_pct: float = 0.25
+    min_open_interest: int = 50
+    min_volume: int = 10
+    max_contracts_per_symbol: int = 1
+    max_option_premium_pct: float = 0.02
+    max_assignment_notional_pct: float = 0.20
+    max_total_options_assignment_pct: float = 0.35
+    max_abs_short_call_delta: float = 0.45
+    max_abs_short_put_delta: float = 0.40
+    min_premium_yield_annualized: float = 0.02
+
 RISK = RiskConfig()
+OPTIONS_RISK = OptionsRiskConfig()
 
 def ensure_dirs() -> None:
-    for path in (DATA_DIR, PRICE_DIR, SYNTHETIC_PRICE_DIR, REPORT_DIR, FACTOR_DIR, EVIDENCE_DIR):
+    for path in (DATA_DIR, PRICE_DIR, SYNTHETIC_PRICE_DIR, REPORT_DIR, FACTOR_DIR, EVIDENCE_DIR, OPTIONS_DIR, OPTIONS_CHAIN_DIR):
         path.mkdir(parents=True, exist_ok=True)

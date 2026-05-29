@@ -11,9 +11,11 @@ from urllib.parse import urlparse
 
 from .backtest import moving_average_cross_backtest
 from .broker import load_order_candidates, load_portfolio
-from .config import DEFAULT_UNIVERSE, EVIDENCE_DIR, LEDGER_PATH, PENDING_CANDIDATES_PATH, REPORT_DIR, RISK, STATE_PATH
+from .config import DEFAULT_UNIVERSE, EVIDENCE_DIR, LEDGER_PATH, OPTIONS_CHAIN_DIR, OPTIONS_RISK, PENDING_CANDIDATES_PATH, REPORT_DIR, RISK, STATE_PATH
 from .data import Bar, load_cached_prices, load_cached_synthetic_prices
 from .diagnosis import TradeDiagnosis, generate_strategy_health_report
+from .options_data import load_available_option_chains
+from .options_screeners import screen_cash_secured_puts, screen_covered_calls
 from .signals import cross_sectional_momentum_ranks, generate_ensemble_signal, generate_strategy_signals, rank_signals
 
 
@@ -161,12 +163,35 @@ def build_dashboard_snapshot(symbols: list[str] | None = None) -> dict:
             "source": sources.get(signal.symbol, "missing"),
         })
 
+    option_chains = load_available_option_chains(OPTIONS_CHAIN_DIR)
+    covered_calls = []
+    cash_secured_puts = []
+    options_warnings = []
+    for chain in option_chains:
+        covered_calls.extend(screen_covered_calls(chain, portfolio, OPTIONS_RISK))
+        cash_secured_puts.extend(screen_cash_secured_puts(chain, portfolio, OPTIONS_RISK))
+        stale_source = "synthetic" in chain.source.lower()
+        if stale_source:
+            options_warnings.append(f"{chain.underlying}: synthetic/sample chain source")
+    options_payload = {
+        "mode": "PAPER_ONLY" if OPTIONS_RISK.paper_options_enabled else "DISABLED",
+        "chain_count": len(option_chains),
+        "covered_call_count": len(covered_calls),
+        "cash_secured_put_count": len(cash_secured_puts),
+        "covered_calls": [asdict(c) for c in covered_calls[:8]],
+        "cash_secured_puts": [asdict(p) for p in cash_secured_puts[:8]],
+        "warnings": options_warnings,
+        "guardrails": asdict(OPTIONS_RISK),
+    }
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": "READ_ONLY_VIEW",
         "guardrails": {
             "live_trading_enabled": RISK.live_trading_enabled,
             "allow_options": RISK.allow_options,
+            "paper_options_enabled": OPTIONS_RISK.paper_options_enabled,
+            "live_options_enabled": OPTIONS_RISK.live_options_enabled,
             "allow_short": RISK.allow_short,
             "allow_margin": RISK.allow_margin,
         },
@@ -196,6 +221,7 @@ def build_dashboard_snapshot(symbols: list[str] | None = None) -> dict:
             "trade_diagnoses": [d.as_record() for d in diagnoses[-20:]],
             "health": health,
         },
+        "options": options_payload,
         "data_sources": sources,
         "report_excerpt": _latest_report_excerpt(),
     }
@@ -219,6 +245,7 @@ def render_dashboard_html(snapshot: dict) -> str:
     health = snapshot["council"]["health"]
     diagnoses = snapshot["council"]["trade_diagnoses"]
     sources = snapshot["data_sources"]
+    options = snapshot.get("options", {"covered_calls": [], "cash_secured_puts": [], "warnings": [], "mode": "DISABLED", "chain_count": 0})
     synthetic_count = len([s for s in sources.values() if "synthetic" in s])
     missing_count = len([s for s in sources.values() if s == "missing"])
 
@@ -262,6 +289,16 @@ def render_dashboard_html(snapshot: dict) -> str:
         f"<li><b>{esc(d['symbol'])}</b><span>{esc(d['strategy'])} · {esc(d['regime_label'])} · pnl {_pct(d['pnl_pct'])} · {esc(d.get('failure_mode') or 'no failure')}</span></li>"
         for d in diagnoses[-8:]
     ) or "<li><b>No diagnoses yet</b><span>They appear after mock trades have post-entry bars.</span></li>"
+
+    option_call_rows = "\n".join(
+        f"<li><b>CC {esc(c['contract']['underlying'])} {esc(c['contract']['expiration'])} ${float(c['contract']['strike']):.0f}</b><span>premium {_money(c['premium'])} · annualized {_pct(c['annualized_yield'])} · delta {float(c['contract']['greeks']['delta']):.2f}</span></li>"
+        for c in options.get("covered_calls", [])[:5]
+    ) or "<li><b>No covered-call candidates</b><span>Need cached chains, 100-share lots, and liquidity pass.</span></li>"
+    option_put_rows = "\n".join(
+        f"<li><b>CSP {esc(p['contract']['underlying'])} {esc(p['contract']['expiration'])} ${float(p['contract']['strike']):.0f}</b><span>reserve {_money(p['cash_reserved'])} · premium {_money(p['premium'])} · annualized {_pct(p['annualized_yield'])}</span></li>"
+        for p in options.get("cash_secured_puts", [])[:5]
+    ) or "<li><b>No cash-secured put candidates</b><span>Need cash, cached chains, and liquidity pass.</span></li>"
+    option_warning_rows = "\n".join(f"<li><b>Warning</b><span>{esc(w)}</span></li>" for w in options.get("warnings", [])[:5]) or "<li><b>Guardrails clean</b><span>No options data warnings in current snapshot.</span></li>"
 
     report_excerpt = esc(snapshot.get("report_excerpt", ""))
     generated = esc(snapshot["generated_at"])
@@ -334,7 +371,7 @@ def render_dashboard_html(snapshot: dict) -> str:
       <div class=\"kpi\"><span>Signal mix</span><strong>{buy}/{hold}/{sell}</strong><small>BUY / HOLD / SELL</small></div>
       <div class=\"kpi\"><span>Queued mock orders</span><strong>{len(candidates)}</strong><small>Next-open candidates</small></div>
       <div class=\"kpi\"><span>Ledger decisions</span><strong>{accepted}/{rejected}</strong><small>Accepted / rejected</small></div>
-      <div class=\"kpi\"><span>Data quality</span><strong>{synthetic_count}/{missing_count}</strong><small>Synthetic / missing sources</small></div>
+      <div class=\"kpi\"><span>Options chains</span><strong>{options.get('chain_count', 0)}</strong><small>{esc(options.get('mode', 'DISABLED'))}</small></div>
     </section>
 
     <main class=\"grid main\">
@@ -346,6 +383,7 @@ def render_dashboard_html(snapshot: dict) -> str:
       </aside>
     </main>
 
+    <section class=\"panel\" style=\"margin-top:16px\"><h2>Options Research — PAPER ONLY</h2><div class=\"grid health-grid\"><div><h3>Covered calls</h3><ul class=\"feed\">{option_call_rows}</ul></div><div><h3>Cash-secured puts</h3><ul class=\"feed\">{option_put_rows}</ul></div></div><h3>Options guardrails</h3><ul class=\"feed\">{option_warning_rows}</ul></section>
     <section class=\"panel\" style=\"margin-top:16px\"><h2>Backtest sanity checks</h2><table><thead><tr><th>Symbol</th><th>Strategy</th><th>Return</th><th>Benchmark</th><th>Max DD</th><th>Sharpe</th><th>Trades</th></tr></thead><tbody>{backtest_rows}</tbody></table></section>
     <section class=\"grid main\" style=\"margin-top:16px\"><div class=\"panel\"><h2>Trade diagnoses</h2><ul class=\"feed\">{diagnosis_rows}</ul></div><div class=\"panel\"><h2>Latest report excerpt</h2><pre>{report_excerpt}</pre></div></section>
     <div class=\"footer\">Generated {generated} · API: /api/snapshot · Source: local Market Lab artifacts only</div>
