@@ -256,6 +256,25 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertEqual(puts[0].contracts, 2)
         self.assertLessEqual(puts[0].cash_reserved, portfolio.equity({"SPY": 100}) * risk.max_total_options_assignment_pct)
 
+    def test_screeners_reject_stale_cached_chains_and_expired_contracts(self):
+        stale_as_of = date.today() - timedelta(days=45)
+        expired = date.today() - timedelta(days=10)
+        snapshot = OptionChainSnapshot(
+            underlying="SPY",
+            underlying_price=100.0,
+            as_of=stale_as_of.isoformat() + "T21:00:00Z",
+            source="fixture",
+            contracts=[
+                OptionContract("SPY", expired.isoformat(), 105.0, "CALL", OptionQuote(1.9, 2.1, 2.0, 150, 1200), OptionGreeks(0.35, 0.04, -0.03, 0.12, 0.28)),
+                OptionContract("SPY", expired.isoformat(), 95.0, "PUT", OptionQuote(1.4, 1.6, 1.5, 180, 1400), OptionGreeks(-0.30, 0.03, -0.025, 0.10, 0.31)),
+            ],
+        )
+        risk = OptionsRiskConfig(allow_options=True, paper_options_enabled=True, max_chain_age_days=2)
+        portfolio = Portfolio(cash=100_000, positions={"SPY": Position("SPY", 100, 90.0)})
+
+        self.assertEqual(screen_covered_calls(snapshot, portfolio, risk), [])
+        self.assertEqual(screen_cash_secured_puts(snapshot, portfolio, risk), [])
+
 
 if __name__ == "__main__":
     unittest.main()

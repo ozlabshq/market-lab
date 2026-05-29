@@ -49,6 +49,7 @@ class OptionsRiskConfig:
     allow_naked_calls: bool = False
     min_dte: int = 14
     max_dte: int = 60
+    max_chain_age_days: int = 2
     max_bid_ask_spread_pct: float = 0.25
     min_open_interest: int = 50
     min_volume: int = 10

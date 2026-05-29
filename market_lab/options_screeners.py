@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 
 from .broker import Portfolio
 from .config import OptionsRiskConfig, OPTIONS_RISK
@@ -28,18 +29,32 @@ class CashSecuredPutCandidate:
     reason: str
 
 
+def _as_date(value: str | date | None) -> date:
+    if value is None:
+        return date.today()
+    if isinstance(value, date):
+        return value
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).date() if "T" in value else date.fromisoformat(value)
+
+
+def _chain_fresh(snapshot: OptionChainSnapshot, risk: OptionsRiskConfig, as_of: str | date | None = None) -> bool:
+    today = _as_date(as_of)
+    snapshot_date = _as_date(snapshot.as_of)
+    return 0 <= (today - snapshot_date).days <= risk.max_chain_age_days
+
+
 def _liquid(contract: OptionContract, risk: OptionsRiskConfig) -> bool:
     q = contract.quote
     return q.bid > 0 and q.ask >= q.bid and q.spread_pct <= risk.max_bid_ask_spread_pct and q.open_interest >= risk.min_open_interest and q.volume >= risk.min_volume
 
 
-def _dte_ok(snapshot: OptionChainSnapshot, contract: OptionContract, risk: OptionsRiskConfig) -> bool:
-    dte = contract.dte(snapshot.as_of)
+def _dte_ok(snapshot: OptionChainSnapshot, contract: OptionContract, risk: OptionsRiskConfig, as_of: str | date | None = None) -> bool:
+    dte = contract.dte(_as_date(as_of).isoformat())
     return risk.min_dte <= dte <= risk.max_dte
 
 
-def screen_covered_calls(snapshot: OptionChainSnapshot, portfolio: Portfolio, risk: OptionsRiskConfig = OPTIONS_RISK) -> list[CoveredCallCandidate]:
-    if not risk.allow_options or not risk.paper_options_enabled:
+def screen_covered_calls(snapshot: OptionChainSnapshot, portfolio: Portfolio, risk: OptionsRiskConfig = OPTIONS_RISK, as_of: str | date | None = None) -> list[CoveredCallCandidate]:
+    if not risk.allow_options or not risk.paper_options_enabled or not _chain_fresh(snapshot, risk, as_of):
         return []
     shares = portfolio.positions.get(snapshot.underlying.upper())
     available_contracts = (shares.quantity // 100) if shares else 0
@@ -49,11 +64,11 @@ def screen_covered_calls(snapshot: OptionChainSnapshot, portfolio: Portfolio, ri
     for c in snapshot.contracts:
         if c.option_type != "CALL" or c.strike <= snapshot.underlying_price:
             continue
-        if not _dte_ok(snapshot, c, risk) or not _liquid(c, risk):
+        if not _dte_ok(snapshot, c, risk, as_of) or not _liquid(c, risk):
             continue
         if abs(c.greeks.delta) > risk.max_abs_short_call_delta:
             continue
-        dte = max(c.dte(snapshot.as_of), 1)
+        dte = max(c.dte(_as_date(as_of).isoformat()), 1)
         premium = c.quote.mid * 100
         annualized = premium / max(snapshot.underlying_price * 100, 1) * (365 / dte)
         if annualized < risk.min_premium_yield_annualized:
@@ -63,19 +78,19 @@ def screen_covered_calls(snapshot: OptionChainSnapshot, portfolio: Portfolio, ri
     return sorted(out, key=lambda x: (x.annualized_yield, x.contract.quote.open_interest), reverse=True)
 
 
-def screen_cash_secured_puts(snapshot: OptionChainSnapshot, portfolio: Portfolio, risk: OptionsRiskConfig = OPTIONS_RISK) -> list[CashSecuredPutCandidate]:
-    if not risk.allow_options or not risk.paper_options_enabled:
+def screen_cash_secured_puts(snapshot: OptionChainSnapshot, portfolio: Portfolio, risk: OptionsRiskConfig = OPTIONS_RISK, as_of: str | date | None = None) -> list[CashSecuredPutCandidate]:
+    if not risk.allow_options or not risk.paper_options_enabled or not _chain_fresh(snapshot, risk, as_of):
         return []
     out: list[CashSecuredPutCandidate] = []
     for c in snapshot.contracts:
         if c.option_type != "PUT" or c.strike >= snapshot.underlying_price:
             continue
-        if not _dte_ok(snapshot, c, risk) or not _liquid(c, risk):
+        if not _dte_ok(snapshot, c, risk, as_of) or not _liquid(c, risk):
             continue
         if abs(c.greeks.delta) > risk.max_abs_short_put_delta:
             continue
         cash_reserved = c.strike * 100
-        dte = max(c.dte(snapshot.as_of), 1)
+        dte = max(c.dte(_as_date(as_of).isoformat()), 1)
         premium = c.quote.mid * 100
         annualized = premium / max(cash_reserved, 1) * (365 / dte)
         if annualized < risk.min_premium_yield_annualized:
