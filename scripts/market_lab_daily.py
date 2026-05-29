@@ -15,9 +15,11 @@ from market_lab.broker import (
     load_portfolio,
     save_order_candidates,
 )
-from market_lab.config import DEFAULT_UNIVERSE, RISK, ensure_dirs
+from market_lab.config import DEFAULT_UNIVERSE, RISK, OPTIONS_CHAIN_DIR, OPTIONS_RISK, ensure_dirs
 from market_lab.data import fetch_prices
 from market_lab.factors import fetch_factors
+from market_lab.options_data import load_available_option_chains
+from market_lab.options_screeners import screen_cash_secured_puts, screen_covered_calls
 from market_lab.report import render_report, save_report
 from market_lab.signals import (
     apply_factor_overlay,
@@ -130,7 +132,17 @@ def main() -> int:
 
     cross_sectional = cross_sectional_momentum_ranks(bars_by_symbol)
     portfolio = load_portfolio()
-    text = render_report(ensemble_signals, backtests, decisions, portfolio, prices, sources, queued_candidates, family_signals, cross_sectional, factors_by_symbol)
+    option_chains = load_available_option_chains(OPTIONS_CHAIN_DIR)
+    covered_calls = []
+    cash_secured_puts = []
+    option_warnings = []
+    for chain in option_chains:
+        covered_calls.extend(screen_covered_calls(chain, portfolio, OPTIONS_RISK))
+        cash_secured_puts.extend(screen_cash_secured_puts(chain, portfolio, OPTIONS_RISK))
+        if "synthetic" in chain.source.lower() or "fixture" in chain.source.lower():
+            option_warnings.append(f"{chain.underlying}: option chain source is {chain.source}; paper research only")
+    options_research = {"covered_calls": covered_calls, "cash_secured_puts": cash_secured_puts, "warnings": option_warnings}
+    text = render_report(ensemble_signals, backtests, decisions, portfolio, prices, sources, queued_candidates, family_signals, cross_sectional, factors_by_symbol, options_research)
     path = save_report(text)
     print(path)
     print(text)

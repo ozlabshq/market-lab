@@ -42,8 +42,8 @@ class RiskConfig:
 
 @dataclass(frozen=True)
 class OptionsRiskConfig:
-    allow_options: bool = False
-    paper_options_enabled: bool = False
+    allow_options: bool = True
+    paper_options_enabled: bool = True
     live_options_enabled: bool = False
     allow_margin: bool = False
     allow_naked_calls: bool = False

@@ -166,6 +166,38 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertEqual(len(puts), 1)
         self.assertLessEqual(puts[0].cash_reserved, portfolio.equity({"SPY": 100}) * risk.max_assignment_notional_pct)
         self.assertEqual(puts[0].contracts, 2)
+    def test_paper_options_rejects_global_kill_switch_and_oversized_long_premium(self):
+        call = sample_snapshot().contracts[0]
+        paper = OptionPaperPortfolio(cash=100_000)
+        killed = OptionsRiskConfig(allow_options=False, paper_options_enabled=True)
+        decision = evaluate_option_paper_order(paper, Portfolio(cash=100_000), OptionPaperOrder("BUY_TO_OPEN", call, 1, call.quote.mid, "long_call"), killed)
+        self.assertFalse(decision.accepted)
+
+        expensive = OptionContract(call.underlying, call.expiration, call.strike, "CALL", OptionQuote(49.0, 51.0, 50.0, 100, 1000), call.greeks)
+        risk = OptionsRiskConfig(allow_options=True, paper_options_enabled=True, max_option_premium_pct=0.02)
+        decision = evaluate_option_paper_order(paper, Portfolio(cash=100_000), OptionPaperOrder("BUY_TO_OPEN", expensive, 1, expensive.quote.mid, "long_call"), risk)
+        self.assertFalse(decision.accepted)
+        self.assertIn("premium", decision.reason)
+
+    def test_daily_report_script_builds_options_research_from_cached_chains(self):
+        import scripts.market_lab_daily as daily
+        snapshot = sample_snapshot()
+        portfolio = Portfolio(cash=20_000, positions={"SPY": Position("SPY", 100, 90.0)})
+        with tempfile.TemporaryDirectory() as td:
+            chain_dir = Path(td) / "chains"
+            save_option_chain_snapshot(snapshot, chain_dir)
+            with patch.object(daily, "OPTIONS_CHAIN_DIR", chain_dir), patch.object(daily, "OPTIONS_RISK", OptionsRiskConfig(allow_options=True, paper_options_enabled=True, max_assignment_notional_pct=0.60)):
+                chains = daily.load_available_option_chains(daily.OPTIONS_CHAIN_DIR)
+                calls = []
+                puts = []
+                for chain in chains:
+                    calls.extend(daily.screen_covered_calls(chain, portfolio, daily.OPTIONS_RISK))
+                    puts.extend(daily.screen_cash_secured_puts(chain, portfolio, daily.OPTIONS_RISK))
+
+        text = render_report([], [], [], portfolio, {"SPY": 100}, {"SPY": "cache"}, options_research={"covered_calls": calls, "cash_secured_puts": puts, "warnings": []})
+        self.assertIn("SPY", text)
+        self.assertIn("CALL", text)
+        self.assertIn("PUT", text)
 
 
 if __name__ == "__main__":

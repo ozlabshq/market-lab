@@ -57,7 +57,7 @@ def _accept(order: OptionPaperOrder, premium: float, reason: str) -> OptionPaper
 
 
 def evaluate_option_paper_order(paper: OptionPaperPortfolio, equity_portfolio: Portfolio, order: OptionPaperOrder, risk: OptionsRiskConfig = OPTIONS_RISK) -> OptionPaperDecision:
-    if not risk.paper_options_enabled or risk.live_options_enabled:
+    if not risk.allow_options or not risk.paper_options_enabled or risk.live_options_enabled:
         return _reject(order, "paper options are disabled or live options unexpectedly enabled")
     if order.contracts <= 0 or order.price <= 0:
         return _reject(order, "contracts and price must be positive")
@@ -68,6 +68,9 @@ def evaluate_option_paper_order(paper: OptionPaperPortfolio, equity_portfolio: P
     cid = contract.contract_id
 
     if order.action == "BUY_TO_OPEN":
+        account_equity = max(equity_portfolio.equity({contract.underlying: contract.strike}), paper.cash, 1.0)
+        if premium > account_equity * risk.max_option_premium_pct:
+            return _reject(order, "long option premium exceeds max premium risk gate")
         if premium > paper.available_cash:
             return _reject(order, "insufficient available cash for long option premium")
         paper.cash -= premium
