@@ -274,6 +274,32 @@ class OptionsSupportTests(unittest.TestCase):
 
         self.assertEqual(screen_covered_calls(snapshot, portfolio, risk), [])
         self.assertEqual(screen_cash_secured_puts(snapshot, portfolio, risk), [])
+    def test_screeners_reject_when_live_options_kill_switch_is_on(self):
+        snapshot = sample_snapshot()
+        risk = OptionsRiskConfig(allow_options=True, paper_options_enabled=True, live_options_enabled=True)
+        portfolio = Portfolio(cash=100_000, positions={"SPY": Position("SPY", 100, 90.0)})
+
+        self.assertEqual(screen_covered_calls(snapshot, portfolio, risk), [])
+        self.assertEqual(screen_cash_secured_puts(snapshot, portfolio, risk), [])
+
+    def test_dashboard_reports_disabled_mode_when_options_kill_switches_are_active(self):
+        snapshot = sample_snapshot()
+        portfolio = Portfolio(cash=100_000, positions={"SPY": Position("SPY", 100, 90.0)})
+        disabled = OptionsRiskConfig(allow_options=False, paper_options_enabled=True, live_options_enabled=False)
+        live_enabled = OptionsRiskConfig(allow_options=True, paper_options_enabled=True, live_options_enabled=True)
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            save_option_chain_snapshot(snapshot, data_dir / "options" / "chains")
+            save_portfolio(portfolio, data_dir / "mock_portfolio_state.json")
+            with patch("market_lab.webapp.OPTIONS_CHAIN_DIR", data_dir / "options" / "chains"), patch("market_lab.webapp.STATE_PATH", data_dir / "mock_portfolio_state.json"), patch("market_lab.webapp.OPTIONS_RISK", disabled):
+                disabled_dash = build_dashboard_snapshot(["SPY"])
+            with patch("market_lab.webapp.OPTIONS_CHAIN_DIR", data_dir / "options" / "chains"), patch("market_lab.webapp.STATE_PATH", data_dir / "mock_portfolio_state.json"), patch("market_lab.webapp.OPTIONS_RISK", live_enabled):
+                live_dash = build_dashboard_snapshot(["SPY"])
+
+        self.assertEqual(disabled_dash["options"]["mode"], "DISABLED")
+        self.assertEqual(live_dash["options"]["mode"], "DISABLED")
+        self.assertEqual(disabled_dash["options"]["covered_call_count"], 0)
+        self.assertEqual(live_dash["options"]["cash_secured_put_count"], 0)
 
 
 if __name__ == "__main__":

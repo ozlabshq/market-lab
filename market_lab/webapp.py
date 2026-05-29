@@ -173,8 +173,9 @@ def build_dashboard_snapshot(symbols: list[str] | None = None) -> dict:
         stale_source = "synthetic" in chain.source.lower()
         if stale_source:
             options_warnings.append(f"{chain.underlying}: synthetic/sample chain source")
+    options_mode = "PAPER_ONLY" if OPTIONS_RISK.allow_options and OPTIONS_RISK.paper_options_enabled and not OPTIONS_RISK.live_options_enabled else "DISABLED"
     options_payload = {
-        "mode": "PAPER_ONLY" if OPTIONS_RISK.paper_options_enabled else "DISABLED",
+        "mode": options_mode,
         "chain_count": len(option_chains),
         "covered_call_count": len(covered_calls),
         "cash_secured_put_count": len(cash_secured_puts),

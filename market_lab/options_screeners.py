@@ -54,7 +54,7 @@ def _dte_ok(snapshot: OptionChainSnapshot, contract: OptionContract, risk: Optio
 
 
 def screen_covered_calls(snapshot: OptionChainSnapshot, portfolio: Portfolio, risk: OptionsRiskConfig = OPTIONS_RISK, as_of: str | date | None = None) -> list[CoveredCallCandidate]:
-    if not risk.allow_options or not risk.paper_options_enabled or not _chain_fresh(snapshot, risk, as_of):
+    if not risk.allow_options or not risk.paper_options_enabled or risk.live_options_enabled or not _chain_fresh(snapshot, risk, as_of):
         return []
     shares = portfolio.positions.get(snapshot.underlying.upper())
     available_contracts = (shares.quantity // 100) if shares else 0
@@ -79,7 +79,7 @@ def screen_covered_calls(snapshot: OptionChainSnapshot, portfolio: Portfolio, ri
 
 
 def screen_cash_secured_puts(snapshot: OptionChainSnapshot, portfolio: Portfolio, risk: OptionsRiskConfig = OPTIONS_RISK, as_of: str | date | None = None) -> list[CashSecuredPutCandidate]:
-    if not risk.allow_options or not risk.paper_options_enabled or not _chain_fresh(snapshot, risk, as_of):
+    if not risk.allow_options or not risk.paper_options_enabled or risk.live_options_enabled or not _chain_fresh(snapshot, risk, as_of):
         return []
     out: list[CashSecuredPutCandidate] = []
     for c in snapshot.contracts:
