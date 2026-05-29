@@ -12,6 +12,7 @@ from market_lab.options_data import (
     OptionContract,
     OptionGreeks,
     OptionQuote,
+    fetch_option_chain_snapshot,
     load_option_chain_snapshot,
     save_option_chain_snapshot,
 )
@@ -300,6 +301,36 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertEqual(live_dash["options"]["mode"], "DISABLED")
         self.assertEqual(disabled_dash["options"]["covered_call_count"], 0)
         self.assertEqual(live_dash["options"]["cash_secured_put_count"], 0)
+
+    def test_fetch_option_chain_snapshot_from_yfinance_normalizes_calls_and_puts(self):
+        import pandas as pd
+
+        class FakeTicker:
+            options = ["2026-07-03"]
+
+            def __init__(self, symbol):
+                self.symbol = symbol
+                self.fast_info = {"last_price": 100.0}
+
+            def option_chain(self, expiration):
+                self.requested_expiration = expiration
+                calls = pd.DataFrame([
+                    {"strike": 105.0, "bid": 1.9, "ask": 2.1, "lastPrice": 2.0, "volume": 150, "openInterest": 1200, "impliedVolatility": 0.28},
+                ])
+                puts = pd.DataFrame([
+                    {"strike": 95.0, "bid": 1.4, "ask": 1.6, "lastPrice": 1.5, "volume": 180, "openInterest": 1400, "impliedVolatility": 0.31},
+                ])
+                return type("Chain", (), {"calls": calls, "puts": puts})()
+
+        with patch("market_lab.options_data.yf.Ticker", FakeTicker):
+            snapshot = fetch_option_chain_snapshot("SPY", min_dte=14, max_dte=60)
+
+        self.assertEqual(snapshot.underlying, "SPY")
+        self.assertEqual(snapshot.source, "yfinance")
+        self.assertEqual(len(snapshot.contracts), 2)
+        self.assertEqual({c.option_type for c in snapshot.contracts}, {"CALL", "PUT"})
+        self.assertGreater(snapshot.contracts[0].quote.open_interest, 0)
+        self.assertGreaterEqual(abs(snapshot.contracts[0].greeks.delta), 0.0)
 
 
 if __name__ == "__main__":

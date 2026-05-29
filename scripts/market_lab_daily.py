@@ -18,7 +18,7 @@ from market_lab.broker import (
 from market_lab.config import DEFAULT_UNIVERSE, RISK, OPTIONS_CHAIN_DIR, OPTIONS_RISK, ensure_dirs
 from market_lab.data import fetch_prices
 from market_lab.factors import fetch_factors
-from market_lab.options_data import load_available_option_chains
+from market_lab.options_data import fetch_option_chain_snapshot, load_available_option_chains, save_option_chain_snapshot
 from market_lab.options_screeners import screen_cash_secured_puts, screen_covered_calls
 from market_lab.report import render_report, save_report
 from market_lab.signals import (
@@ -83,6 +83,8 @@ def main() -> int:
     parser.add_argument("--queue-order-candidates", action="store_true", help="Queue next-session mock candidates instead of same-close fills")
     parser.add_argument("--execute-pending-candidates", action="store_true", help="Fill previously queued candidates at the latest bar open when a later bar is available")
     parser.add_argument("--require-live-data", action="store_true", help="Abort candidate execution/queueing if any symbol falls back to synthetic data")
+    parser.add_argument("--fetch-options", action="store_true", help="Fetch and cache yfinance option chains before screening paper options")
+    parser.add_argument("--max-option-symbols", type=int, default=8, help="Maximum symbols to refresh option chains for when --fetch-options is enabled")
     parser.add_argument("--max-orders", type=int, default=3)
     args = parser.parse_args()
 
@@ -132,6 +134,13 @@ def main() -> int:
 
     cross_sectional = cross_sectional_momentum_ranks(bars_by_symbol)
     portfolio = load_portfolio()
+    if args.fetch_options and OPTIONS_RISK.allow_options and OPTIONS_RISK.paper_options_enabled and not OPTIONS_RISK.live_options_enabled:
+        option_symbols = [sig.symbol for sig in rank_signals(ensemble_signals) if sig.action in {"BUY", "HOLD"}]
+        for symbol in option_symbols[: args.max_option_symbols]:
+            try:
+                save_option_chain_snapshot(fetch_option_chain_snapshot(symbol, OPTIONS_RISK.min_dte, OPTIONS_RISK.max_dte), OPTIONS_CHAIN_DIR)
+            except Exception as exc:  # network/vendor failures should not block the equity report
+                sources[f"{symbol}:options"] = f"options_unavailable:{type(exc).__name__}"
     option_chains = load_available_option_chains(OPTIONS_CHAIN_DIR)
     covered_calls = []
     cash_secured_puts = []
