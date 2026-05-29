@@ -40,7 +40,8 @@ def _as_date(value: str | date | None) -> date:
 def _chain_fresh(snapshot: OptionChainSnapshot, risk: OptionsRiskConfig, as_of: str | date | None = None) -> bool:
     today = _as_date(as_of)
     snapshot_date = _as_date(snapshot.as_of)
-    return 0 <= (today - snapshot_date).days <= risk.max_chain_age_days
+    age_days = (today - snapshot_date).days
+    return -1 <= age_days <= risk.max_chain_age_days
 
 
 def _liquid(contract: OptionContract, risk: OptionsRiskConfig) -> bool:

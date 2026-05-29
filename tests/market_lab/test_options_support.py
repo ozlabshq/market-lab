@@ -275,6 +275,25 @@ class OptionsSupportTests(unittest.TestCase):
 
         self.assertEqual(screen_covered_calls(snapshot, portfolio, risk), [])
         self.assertEqual(screen_cash_secured_puts(snapshot, portfolio, risk), [])
+
+    def test_screeners_accept_fresh_utc_snapshot_when_local_date_lags(self):
+        tomorrow_utc = date.today() + timedelta(days=1)
+        expiry = tomorrow_utc + timedelta(days=35)
+        snapshot = OptionChainSnapshot(
+            underlying="SPY",
+            underlying_price=100.0,
+            as_of=tomorrow_utc.isoformat() + "T01:00:00+00:00",
+            source="fixture",
+            contracts=[
+                OptionContract("SPY", expiry.isoformat(), 105.0, "CALL", OptionQuote(1.9, 2.1, 2.0, 150, 1200), OptionGreeks(0.35, 0.04, -0.03, 0.12, 0.28)),
+                OptionContract("SPY", expiry.isoformat(), 95.0, "PUT", OptionQuote(1.4, 1.6, 1.5, 180, 1400), OptionGreeks(-0.30, 0.03, -0.025, 0.10, 0.31)),
+            ],
+        )
+        risk = OptionsRiskConfig(allow_options=True, paper_options_enabled=True, max_chain_age_days=2, max_assignment_notional_pct=0.60)
+        portfolio = Portfolio(cash=100_000, positions={"SPY": Position("SPY", 100, 90.0)})
+
+        self.assertEqual(len(screen_covered_calls(snapshot, portfolio, risk, as_of=date.today())), 1)
+        self.assertEqual(len(screen_cash_secured_puts(snapshot, portfolio, risk, as_of=date.today())), 1)
     def test_screeners_reject_when_live_options_kill_switch_is_on(self):
         snapshot = sample_snapshot()
         risk = OptionsRiskConfig(allow_options=True, paper_options_enabled=True, live_options_enabled=True)
@@ -306,7 +325,7 @@ class OptionsSupportTests(unittest.TestCase):
         import pandas as pd
 
         class FakeTicker:
-            options = ["2026-07-03"]
+            options = [(date.today() + timedelta(days=35)).isoformat()]
 
             def __init__(self, symbol):
                 self.symbol = symbol
