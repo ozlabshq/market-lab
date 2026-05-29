@@ -75,15 +75,17 @@ def screen_cash_secured_puts(snapshot: OptionChainSnapshot, portfolio: Portfolio
         if abs(c.greeks.delta) > risk.max_abs_short_put_delta:
             continue
         cash_reserved = c.strike * 100
-        if cash_reserved > portfolio.cash or cash_reserved > portfolio.equity({snapshot.underlying: snapshot.underlying_price}) * risk.max_assignment_notional_pct:
-            continue
         dte = max(c.dte(snapshot.as_of), 1)
         premium = c.quote.mid * 100
         annualized = premium / max(cash_reserved, 1) * (365 / dte)
         if annualized < risk.min_premium_yield_annualized:
             continue
-        contracts = min(int(portfolio.cash // cash_reserved), risk.max_contracts_per_symbol)
+        max_assignment = portfolio.equity({snapshot.underlying: snapshot.underlying_price}) * risk.max_assignment_notional_pct
+        max_contracts_by_assignment = int(max_assignment // cash_reserved)
+        max_contracts_by_cash = int(portfolio.cash // cash_reserved)
+        contracts = min(max_contracts_by_cash, max_contracts_by_assignment, risk.max_contracts_per_symbol)
         if contracts <= 0:
             continue
-        out.append(CashSecuredPutCandidate(c, contracts, cash_reserved * contracts, premium * contracts, annualized, 1 - c.strike / snapshot.underlying_price, "cash-secured put: full cash reserve, liquid, defined assignment risk"))
+        total_reserved = cash_reserved * contracts
+        out.append(CashSecuredPutCandidate(c, contracts, total_reserved, premium * contracts, annualized, 1 - c.strike / snapshot.underlying_price, "cash-secured put: full cash reserve, liquid, defined assignment risk"))
     return sorted(out, key=lambda x: (x.annualized_yield, x.contract.quote.open_interest), reverse=True)

@@ -113,7 +113,13 @@ def evaluate_option_paper_order(paper: OptionPaperPortfolio, equity_portfolio: P
     if order.action == "BUY_TO_CLOSE":
         if current > -order.contracts:
             return _reject(order, "cannot buy to close more short contracts than open")
-        if premium > paper.available_cash:
+        if contract.option_type == "CALL":
+            collateral_release = 100 * order.contracts
+            cash_available_for_close = paper.available_cash
+        else:
+            collateral_release = contract.strike * 100 * order.contracts
+            cash_available_for_close = paper.available_cash + collateral_release
+        if premium > cash_available_for_close:
             return _reject(order, "insufficient cash to buy short option closed")
         paper.cash -= premium
         paper.positions[cid] = current + order.contracts

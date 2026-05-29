@@ -145,6 +145,27 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertGreaterEqual(dash["options"]["covered_call_count"], 1)
         self.assertIn("Options Research", html)
         self.assertIn("PAPER ONLY", html)
+    def test_paper_short_put_can_close_using_released_collateral(self):
+        risk = OptionsRiskConfig(paper_options_enabled=True, max_total_options_assignment_pct=1.0)
+        put = sample_snapshot().contracts[1]
+        paper = OptionPaperPortfolio(cash=10_150, positions={put.contract_id: -1}, avg_price={put.contract_id: 1.5}, reserved_cash=9_500)
+
+        decision = evaluate_option_paper_order(paper, Portfolio(cash=10_150), OptionPaperOrder("BUY_TO_CLOSE", put, 1, 7.0, "risk_exit"), risk)
+
+        self.assertTrue(decision.accepted, decision.reason)
+        self.assertEqual(paper.reserved_cash, 0)
+        self.assertNotIn(put.contract_id, paper.positions)
+
+    def test_cash_secured_put_screener_caps_multi_contract_assignment_notional(self):
+        snapshot = sample_snapshot()
+        risk = OptionsRiskConfig(paper_options_enabled=True, max_contracts_per_symbol=3, max_assignment_notional_pct=0.20)
+        portfolio = Portfolio(cash=100_000)
+
+        puts = screen_cash_secured_puts(snapshot, portfolio, risk)
+
+        self.assertEqual(len(puts), 1)
+        self.assertLessEqual(puts[0].cash_reserved, portfolio.equity({"SPY": 100}) * risk.max_assignment_notional_pct)
+        self.assertEqual(puts[0].contracts, 2)
 
 
 if __name__ == "__main__":
