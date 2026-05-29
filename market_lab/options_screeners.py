@@ -45,6 +45,13 @@ def _chain_fresh(snapshot: OptionChainSnapshot, risk: OptionsRiskConfig, as_of: 
     return -1 <= age_days <= risk.max_chain_age_days
 
 
+def _existing_contracts_for_underlying(paper: OptionPaperPortfolio | None, underlying: str) -> int:
+    if paper is None:
+        return 0
+    prefix = f"{underlying.upper()}-"
+    return sum(abs(qty) for cid, qty in paper.positions.items() if cid.startswith(prefix) and qty != 0)
+
+
 def _liquid(contract: OptionContract, risk: OptionsRiskConfig) -> bool:
     q = contract.quote
     return q.bid > 0 and q.ask >= q.bid and q.spread_pct <= risk.max_bid_ask_spread_pct and q.open_interest >= risk.min_open_interest and q.volume >= risk.min_volume
@@ -61,7 +68,9 @@ def screen_covered_calls(snapshot: OptionChainSnapshot, portfolio: Portfolio, ri
     shares = portfolio.positions.get(snapshot.underlying.upper())
     reserved_shares = paper.reserved_shares.get(snapshot.underlying.upper(), 0) if paper else 0
     available_contracts = max(((shares.quantity - reserved_shares) // 100) if shares else 0, 0)
-    if available_contracts <= 0:
+    existing_contracts = _existing_contracts_for_underlying(paper, snapshot.underlying)
+    max_new_contracts = max(risk.max_contracts_per_symbol - existing_contracts, 0)
+    if available_contracts <= 0 or max_new_contracts <= 0:
         return []
     out: list[CoveredCallCandidate] = []
     for c in snapshot.contracts:
@@ -76,13 +85,17 @@ def screen_covered_calls(snapshot: OptionChainSnapshot, portfolio: Portfolio, ri
         annualized = premium / max(snapshot.underlying_price * 100, 1) * (365 / dte)
         if annualized < risk.min_premium_yield_annualized:
             continue
-        contracts = min(available_contracts, risk.max_contracts_per_symbol)
+        contracts = min(available_contracts, max_new_contracts)
         out.append(CoveredCallCandidate(c, contracts, premium * contracts, annualized, c.strike / snapshot.underlying_price - 1, "covered call: shares available, liquid, defined assignment risk"))
     return sorted(out, key=lambda x: (x.annualized_yield, x.contract.quote.open_interest), reverse=True)
 
 
 def screen_cash_secured_puts(snapshot: OptionChainSnapshot, portfolio: Portfolio, risk: OptionsRiskConfig = OPTIONS_RISK, as_of: str | date | None = None, paper: OptionPaperPortfolio | None = None) -> list[CashSecuredPutCandidate]:
     if not risk.allow_options or not risk.paper_options_enabled or risk.live_options_enabled or not _chain_fresh(snapshot, risk, as_of):
+        return []
+    existing_contracts = _existing_contracts_for_underlying(paper, snapshot.underlying)
+    max_new_contracts = max(risk.max_contracts_per_symbol - existing_contracts, 0)
+    if max_new_contracts <= 0:
         return []
     out: list[CashSecuredPutCandidate] = []
     for c in snapshot.contracts:
@@ -99,13 +112,13 @@ def screen_cash_secured_puts(snapshot: OptionChainSnapshot, portfolio: Portfolio
         if annualized < risk.min_premium_yield_annualized:
             continue
         reserved_cash = paper.reserved_cash if paper else 0.0
-        available_cash = max(portfolio.cash - reserved_cash, 0.0)
+        available_cash = max(paper.available_cash if paper else portfolio.cash, 0.0)
         equity = portfolio.equity({snapshot.underlying: snapshot.underlying_price})
         max_assignment = equity * risk.max_assignment_notional_pct
         max_total_assignment = max(equity * risk.max_total_options_assignment_pct - reserved_cash, 0.0)
         max_contracts_by_assignment = int(min(max_assignment, max_total_assignment) // cash_reserved)
         max_contracts_by_cash = int(available_cash // cash_reserved)
-        contracts = min(max_contracts_by_cash, max_contracts_by_assignment, risk.max_contracts_per_symbol)
+        contracts = min(max_contracts_by_cash, max_contracts_by_assignment, max_new_contracts)
         if contracts <= 0:
             continue
         total_reserved = cash_reserved * contracts
