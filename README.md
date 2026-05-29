@@ -14,6 +14,7 @@ Current posture: **research-only**.
 
 - `market_lab/` — Python package for data, indicators, signals, backtests, factors, reporting, and mock broker logic
 - `scripts/market_lab_daily.py` — daily report runner
+- `scripts/market_lab_webapp.py` — read-only local visual dashboard
 - `tests/market_lab/` — regression/safety tests
 - `research/` — implementation plans and reviews
 - `docs/` — diagrams and system roadmap artifacts
@@ -30,6 +31,15 @@ Generate a local research report:
 ```bash
 python3 scripts/market_lab_daily.py
 ```
+
+Run the read-only visual webapp:
+
+```bash
+python3 scripts/market_lab_webapp.py --host 127.0.0.1 --port 8766
+# open http://127.0.0.1:8766
+```
+
+The webapp exposes viewing endpoints only (`/` and `/api/snapshot`). Write methods return a read-only error and there are no broker/order controls.
 
 ## Data/state policy
 

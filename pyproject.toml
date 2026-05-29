@@ -12,6 +12,9 @@ dependencies = [
   "yfinance>=0.2.40",
 ]
 
+[project.scripts]
+market-lab-webapp = "market_lab.webapp:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8",
