@@ -66,7 +66,7 @@ def _execute_due_candidates(bars_by_symbol, prices):
         latest_date = latest_dates.get(candidate.symbol)
         # Candidate generated after signal_date close. Fill only once a later bar exists.
         if latest_date and latest_date > candidate.signal_date:
-            decisions.append(candidate_to_order_at_open(candidate, bars[-1].open, prices))
+            decisions.append(candidate_to_order_at_open(candidate, bars[-1].open, prices, execution_date=bars[-1].date.isoformat()))
         else:
             remaining.append(candidate)
     save_order_candidates(remaining)

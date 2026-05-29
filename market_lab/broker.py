@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -71,6 +71,9 @@ class OrderDecision:
     fill_price: float | None
     reason: str
     timestamp: str
+    strategy: str = "unknown"
+    signal_date: str | None = None
+    execution_date: str | None = None
 
 @dataclass(frozen=True)
 class OrderCandidate:
@@ -140,8 +143,19 @@ def save_order_candidates(candidates: list[OrderCandidate], path: Path = PENDING
     text = "".join(json.dumps(asdict(candidate), sort_keys=True) + "\n" for candidate in candidates)
     _atomic_write_text(path, text)
 
-def candidate_to_order_at_open(candidate: OrderCandidate, next_open: float, prices: dict[str, float], portfolio_path: Path = STATE_PATH, ledger_path: Path = LEDGER_PATH) -> OrderDecision:
-    return place_mock_order(candidate.side, candidate.symbol, candidate.quantity, next_open, prices, portfolio_path, ledger_path)
+def candidate_to_order_at_open(candidate: OrderCandidate, next_open: float, prices: dict[str, float], portfolio_path: Path = STATE_PATH, ledger_path: Path = LEDGER_PATH, execution_date: str | None = None) -> OrderDecision:
+    return place_mock_order(
+        candidate.side,
+        candidate.symbol,
+        candidate.quantity,
+        next_open,
+        prices,
+        portfolio_path,
+        ledger_path,
+        strategy=candidate.strategy,
+        signal_date=candidate.signal_date,
+        execution_date=execution_date,
+    )
 
 def evaluate_order(portfolio: Portfolio, side: Side, symbol: str, quantity: int, price: float, prices: dict[str, float], risk: RiskConfig = RISK) -> OrderDecision:
     now=datetime.now(timezone.utc).isoformat()
@@ -187,10 +201,22 @@ def evaluate_order(portfolio: Portfolio, side: Side, symbol: str, quantity: int,
             portfolio.positions[symbol]=pos
     return OrderDecision(True, side, symbol, quantity, price, fill, "accepted by mock broker", now)
 
-def place_mock_order(side: Side, symbol: str, quantity: int, price: float, prices: dict[str, float], portfolio_path: Path = STATE_PATH, ledger_path: Path = LEDGER_PATH) -> OrderDecision:
+def place_mock_order(
+    side: Side,
+    symbol: str,
+    quantity: int,
+    price: float,
+    prices: dict[str, float],
+    portfolio_path: Path = STATE_PATH,
+    ledger_path: Path = LEDGER_PATH,
+    strategy: str = "unknown",
+    signal_date: str | None = None,
+    execution_date: str | None = None,
+) -> OrderDecision:
     with _portfolio_lock(portfolio_path):
         portfolio=load_portfolio(portfolio_path)
         decision=evaluate_order(portfolio, side, symbol, quantity, price, prices)
+        decision = replace(decision, strategy=strategy, signal_date=signal_date, execution_date=execution_date)
         append_ledger(decision, ledger_path)
         if decision.accepted:
             save_portfolio(portfolio, portfolio_path)
