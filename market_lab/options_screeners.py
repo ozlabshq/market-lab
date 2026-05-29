@@ -113,7 +113,7 @@ def screen_cash_secured_puts(snapshot: OptionChainSnapshot, portfolio: Portfolio
             continue
         reserved_cash = paper.reserved_cash if paper else 0.0
         available_cash = max(paper.available_cash if paper else portfolio.cash, 0.0)
-        equity = portfolio.equity({snapshot.underlying: snapshot.underlying_price})
+        equity = max(portfolio.equity({snapshot.underlying: snapshot.underlying_price}), paper.cash if paper else 0.0, 1.0)
         max_assignment = equity * risk.max_assignment_notional_pct
         max_total_assignment = max(equity * risk.max_total_options_assignment_pct - reserved_cash, 0.0)
         max_contracts_by_assignment = int(min(max_assignment, max_total_assignment) // cash_reserved)

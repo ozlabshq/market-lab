@@ -314,6 +314,17 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertEqual(screen_covered_calls(snapshot, portfolio, risk, paper=existing), [])
         self.assertEqual(screen_cash_secured_puts(snapshot, portfolio, risk, paper=existing), [])
         self.assertEqual(screen_cash_secured_puts(snapshot, portfolio, risk, paper=low_paper_cash), [])
+
+    def test_cash_secured_put_screener_uses_funded_paper_account_equity_base(self):
+        snapshot = sample_snapshot()
+        risk = OptionsRiskConfig(allow_options=True, paper_options_enabled=True, max_contracts_per_symbol=1, max_assignment_notional_pct=0.20, max_total_options_assignment_pct=0.35)
+        portfolio = Portfolio(cash=5_000)
+        paper = OptionPaperPortfolio(cash=100_000)
+
+        puts = screen_cash_secured_puts(snapshot, portfolio, risk, paper=paper)
+
+        self.assertEqual(len(puts), 1)
+        self.assertLessEqual(puts[0].cash_reserved, paper.cash * risk.max_assignment_notional_pct)
     def test_screeners_reject_when_live_options_kill_switch_is_on(self):
         snapshot = sample_snapshot()
         risk = OptionsRiskConfig(allow_options=True, paper_options_enabled=True, live_options_enabled=True)
