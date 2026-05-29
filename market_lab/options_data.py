@@ -148,14 +148,20 @@ def fetch_option_chain_snapshot(symbol: str, min_dte: int = 14, max_dte: int = 6
     fast_info = getattr(ticker, "fast_info", {}) or {}
     underlying_price = float(fast_info.get("last_price") or fast_info.get("lastPrice") or 0.0)
     chain = ticker.option_chain(expiration)
+    if underlying_price <= 0:
+        strikes = []
+        for frame in (chain.calls, chain.puts):
+            for row in frame.to_dict("records"):
+                strike = _float_value(row, "strike")
+                if strike > 0:
+                    strikes.append(strike)
+        if strikes:
+            underlying_price = sorted(strikes)[len(strikes) // 2]
     contracts = []
     contracts.extend(_contracts_from_frame(chain.calls, symbol, expiration, "CALL", underlying_price, as_of))
     contracts.extend(_contracts_from_frame(chain.puts, symbol, expiration, "PUT", underlying_price, as_of))
     if not contracts:
         raise ValueError(f"no usable option contracts fetched for {symbol.upper()} {expiration}")
-    if underlying_price <= 0:
-        strikes = [c.strike for c in contracts]
-        underlying_price = sorted(strikes)[len(strikes) // 2]
     return OptionChainSnapshot(symbol.upper(), underlying_price, as_of, "yfinance", contracts)
 
 

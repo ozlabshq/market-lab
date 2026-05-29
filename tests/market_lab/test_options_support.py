@@ -351,6 +351,32 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertGreater(snapshot.contracts[0].quote.open_interest, 0)
         self.assertGreaterEqual(abs(snapshot.contracts[0].greeks.delta), 0.0)
 
+    def test_fetch_option_chain_snapshot_computes_delta_after_underlying_price_fallback(self):
+        import pandas as pd
+
+        class FakeTickerNoFastPrice:
+            options = [(date.today() + timedelta(days=35)).isoformat()]
+            fast_info = {}
+
+            def __init__(self, symbol):
+                self.symbol = symbol
+
+            def option_chain(self, expiration):
+                calls = pd.DataFrame([
+                    {"strike": 105.0, "bid": 1.9, "ask": 2.1, "lastPrice": 2.0, "volume": 150, "openInterest": 1200, "impliedVolatility": 0.28},
+                ])
+                puts = pd.DataFrame([
+                    {"strike": 95.0, "bid": 1.4, "ask": 1.6, "lastPrice": 1.5, "volume": 180, "openInterest": 1400, "impliedVolatility": 0.31},
+                ])
+                return type("Chain", (), {"calls": calls, "puts": puts})()
+
+        with patch("market_lab.options_data.yf.Ticker", FakeTickerNoFastPrice):
+            snapshot = fetch_option_chain_snapshot("SPY", min_dte=14, max_dte=60)
+
+        put = [c for c in snapshot.contracts if c.option_type == "PUT"][0]
+        self.assertGreater(snapshot.underlying_price, 0)
+        self.assertGreater(put.greeks.delta, -0.95)
+
 
 if __name__ == "__main__":
     unittest.main()
