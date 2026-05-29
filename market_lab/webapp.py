@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from .backtest import moving_average_cross_backtest
 from .broker import load_order_candidates, load_portfolio
-from .config import DEFAULT_UNIVERSE, EVIDENCE_DIR, LEDGER_PATH, OPTIONS_CHAIN_DIR, OPTIONS_RISK, PENDING_CANDIDATES_PATH, REPORT_DIR, RISK, STATE_PATH
+from .config import DEFAULT_UNIVERSE, EVIDENCE_DIR, LEDGER_PATH, OPTIONS_CHAIN_DIR, OPTIONS_PAPER_STATE_PATH, OPTIONS_RISK, PENDING_CANDIDATES_PATH, REPORT_DIR, RISK, STATE_PATH
 from .data import Bar, load_cached_prices, load_cached_synthetic_prices
 from .diagnosis import TradeDiagnosis, generate_strategy_health_report
 from .options_data import load_available_option_chains
@@ -165,7 +165,7 @@ def build_dashboard_snapshot(symbols: list[str] | None = None) -> dict:
         })
 
     option_chains = load_available_option_chains(OPTIONS_CHAIN_DIR)
-    paper_options = load_option_paper_portfolio()
+    paper_options = load_option_paper_portfolio() if OPTIONS_PAPER_STATE_PATH.exists() else None
     covered_calls = []
     cash_secured_puts = []
     options_warnings = []

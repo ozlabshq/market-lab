@@ -15,7 +15,7 @@ from market_lab.broker import (
     load_portfolio,
     save_order_candidates,
 )
-from market_lab.config import DEFAULT_UNIVERSE, RISK, OPTIONS_CHAIN_DIR, OPTIONS_RISK, ensure_dirs
+from market_lab.config import DEFAULT_UNIVERSE, RISK, OPTIONS_CHAIN_DIR, OPTIONS_PAPER_STATE_PATH, OPTIONS_RISK, ensure_dirs
 from market_lab.data import fetch_prices
 from market_lab.factors import fetch_factors
 from market_lab.options_data import fetch_option_chain_snapshot, load_available_option_chains, save_option_chain_snapshot
@@ -143,7 +143,7 @@ def main() -> int:
             except Exception as exc:  # network/vendor failures should not block the equity report
                 sources[f"{symbol}:options"] = f"options_unavailable:{type(exc).__name__}"
     option_chains = load_available_option_chains(OPTIONS_CHAIN_DIR)
-    paper_options = load_option_paper_portfolio()
+    paper_options = load_option_paper_portfolio() if OPTIONS_PAPER_STATE_PATH.exists() else None
     covered_calls = []
     cash_secured_puts = []
     option_warnings = []
