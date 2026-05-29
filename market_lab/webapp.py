@@ -15,6 +15,7 @@ from .config import DEFAULT_UNIVERSE, EVIDENCE_DIR, LEDGER_PATH, OPTIONS_CHAIN_D
 from .data import Bar, load_cached_prices, load_cached_synthetic_prices
 from .diagnosis import TradeDiagnosis, generate_strategy_health_report
 from .options_data import load_available_option_chains
+from .options_paper import load_option_paper_portfolio
 from .options_screeners import screen_cash_secured_puts, screen_covered_calls
 from .signals import cross_sectional_momentum_ranks, generate_ensemble_signal, generate_strategy_signals, rank_signals
 
@@ -164,12 +165,13 @@ def build_dashboard_snapshot(symbols: list[str] | None = None) -> dict:
         })
 
     option_chains = load_available_option_chains(OPTIONS_CHAIN_DIR)
+    paper_options = load_option_paper_portfolio()
     covered_calls = []
     cash_secured_puts = []
     options_warnings = []
     for chain in option_chains:
-        covered_calls.extend(screen_covered_calls(chain, portfolio, OPTIONS_RISK))
-        cash_secured_puts.extend(screen_cash_secured_puts(chain, portfolio, OPTIONS_RISK))
+        covered_calls.extend(screen_covered_calls(chain, portfolio, OPTIONS_RISK, paper=paper_options))
+        cash_secured_puts.extend(screen_cash_secured_puts(chain, portfolio, OPTIONS_RISK, paper=paper_options))
         stale_source = "synthetic" in chain.source.lower()
         if stale_source:
             options_warnings.append(f"{chain.underlying}: synthetic/sample chain source")

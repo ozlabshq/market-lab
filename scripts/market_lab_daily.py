@@ -19,6 +19,7 @@ from market_lab.config import DEFAULT_UNIVERSE, RISK, OPTIONS_CHAIN_DIR, OPTIONS
 from market_lab.data import fetch_prices
 from market_lab.factors import fetch_factors
 from market_lab.options_data import fetch_option_chain_snapshot, load_available_option_chains, save_option_chain_snapshot
+from market_lab.options_paper import load_option_paper_portfolio
 from market_lab.options_screeners import screen_cash_secured_puts, screen_covered_calls
 from market_lab.report import render_report, save_report
 from market_lab.signals import (
@@ -142,12 +143,13 @@ def main() -> int:
             except Exception as exc:  # network/vendor failures should not block the equity report
                 sources[f"{symbol}:options"] = f"options_unavailable:{type(exc).__name__}"
     option_chains = load_available_option_chains(OPTIONS_CHAIN_DIR)
+    paper_options = load_option_paper_portfolio()
     covered_calls = []
     cash_secured_puts = []
     option_warnings = []
     for chain in option_chains:
-        covered_calls.extend(screen_covered_calls(chain, portfolio, OPTIONS_RISK))
-        cash_secured_puts.extend(screen_cash_secured_puts(chain, portfolio, OPTIONS_RISK))
+        covered_calls.extend(screen_covered_calls(chain, portfolio, OPTIONS_RISK, paper=paper_options))
+        cash_secured_puts.extend(screen_cash_secured_puts(chain, portfolio, OPTIONS_RISK, paper=paper_options))
         if "synthetic" in chain.source.lower() or "fixture" in chain.source.lower():
             option_warnings.append(f"{chain.underlying}: option chain source is {chain.source}; paper research only")
     options_research = {"covered_calls": covered_calls, "cash_secured_puts": cash_secured_puts, "warnings": option_warnings}

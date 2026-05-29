@@ -6,6 +6,7 @@ from datetime import date, datetime
 from .broker import Portfolio
 from .config import OptionsRiskConfig, OPTIONS_RISK
 from .options_data import OptionChainSnapshot, OptionContract
+from .options_paper import OptionPaperPortfolio
 
 
 @dataclass(frozen=True)
@@ -54,11 +55,12 @@ def _dte_ok(snapshot: OptionChainSnapshot, contract: OptionContract, risk: Optio
     return risk.min_dte <= dte <= risk.max_dte
 
 
-def screen_covered_calls(snapshot: OptionChainSnapshot, portfolio: Portfolio, risk: OptionsRiskConfig = OPTIONS_RISK, as_of: str | date | None = None) -> list[CoveredCallCandidate]:
+def screen_covered_calls(snapshot: OptionChainSnapshot, portfolio: Portfolio, risk: OptionsRiskConfig = OPTIONS_RISK, as_of: str | date | None = None, paper: OptionPaperPortfolio | None = None) -> list[CoveredCallCandidate]:
     if not risk.allow_options or not risk.paper_options_enabled or risk.live_options_enabled or not _chain_fresh(snapshot, risk, as_of):
         return []
     shares = portfolio.positions.get(snapshot.underlying.upper())
-    available_contracts = (shares.quantity // 100) if shares else 0
+    reserved_shares = paper.reserved_shares.get(snapshot.underlying.upper(), 0) if paper else 0
+    available_contracts = max(((shares.quantity - reserved_shares) // 100) if shares else 0, 0)
     if available_contracts <= 0:
         return []
     out: list[CoveredCallCandidate] = []
@@ -79,7 +81,7 @@ def screen_covered_calls(snapshot: OptionChainSnapshot, portfolio: Portfolio, ri
     return sorted(out, key=lambda x: (x.annualized_yield, x.contract.quote.open_interest), reverse=True)
 
 
-def screen_cash_secured_puts(snapshot: OptionChainSnapshot, portfolio: Portfolio, risk: OptionsRiskConfig = OPTIONS_RISK, as_of: str | date | None = None) -> list[CashSecuredPutCandidate]:
+def screen_cash_secured_puts(snapshot: OptionChainSnapshot, portfolio: Portfolio, risk: OptionsRiskConfig = OPTIONS_RISK, as_of: str | date | None = None, paper: OptionPaperPortfolio | None = None) -> list[CashSecuredPutCandidate]:
     if not risk.allow_options or not risk.paper_options_enabled or risk.live_options_enabled or not _chain_fresh(snapshot, risk, as_of):
         return []
     out: list[CashSecuredPutCandidate] = []
@@ -96,11 +98,13 @@ def screen_cash_secured_puts(snapshot: OptionChainSnapshot, portfolio: Portfolio
         annualized = premium / max(cash_reserved, 1) * (365 / dte)
         if annualized < risk.min_premium_yield_annualized:
             continue
+        reserved_cash = paper.reserved_cash if paper else 0.0
+        available_cash = max(portfolio.cash - reserved_cash, 0.0)
         equity = portfolio.equity({snapshot.underlying: snapshot.underlying_price})
         max_assignment = equity * risk.max_assignment_notional_pct
-        max_total_assignment = equity * risk.max_total_options_assignment_pct
+        max_total_assignment = max(equity * risk.max_total_options_assignment_pct - reserved_cash, 0.0)
         max_contracts_by_assignment = int(min(max_assignment, max_total_assignment) // cash_reserved)
-        max_contracts_by_cash = int(portfolio.cash // cash_reserved)
+        max_contracts_by_cash = int(available_cash // cash_reserved)
         contracts = min(max_contracts_by_cash, max_contracts_by_assignment, risk.max_contracts_per_symbol)
         if contracts <= 0:
             continue
