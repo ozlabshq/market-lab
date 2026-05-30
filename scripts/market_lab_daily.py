@@ -15,9 +15,12 @@ from market_lab.broker import (
     load_portfolio,
     save_order_candidates,
 )
-from market_lab.config import DEFAULT_UNIVERSE, RISK, ensure_dirs
+from market_lab.config import DEFAULT_UNIVERSE, RISK, OPTIONS_CHAIN_DIR, OPTIONS_RISK, ensure_dirs
 from market_lab.data import fetch_prices
 from market_lab.factors import fetch_factors
+from market_lab.options_data import fetch_option_chain_snapshot, load_available_option_chains, save_option_chain_snapshot
+from market_lab.options_paper import load_option_paper_portfolio
+from market_lab.options_screeners import screen_cash_secured_puts, screen_covered_calls
 from market_lab.report import render_report, save_report
 from market_lab.signals import (
     apply_factor_overlay,
@@ -81,6 +84,8 @@ def main() -> int:
     parser.add_argument("--queue-order-candidates", action="store_true", help="Queue next-session mock candidates instead of same-close fills")
     parser.add_argument("--execute-pending-candidates", action="store_true", help="Fill previously queued candidates at the latest bar open when a later bar is available")
     parser.add_argument("--require-live-data", action="store_true", help="Abort candidate execution/queueing if any symbol falls back to synthetic data")
+    parser.add_argument("--fetch-options", action="store_true", help="Fetch and cache yfinance option chains before screening paper options")
+    parser.add_argument("--max-option-symbols", type=int, default=8, help="Maximum symbols to refresh option chains for when --fetch-options is enabled")
     parser.add_argument("--max-orders", type=int, default=3)
     args = parser.parse_args()
 
@@ -130,7 +135,25 @@ def main() -> int:
 
     cross_sectional = cross_sectional_momentum_ranks(bars_by_symbol)
     portfolio = load_portfolio()
-    text = render_report(ensemble_signals, backtests, decisions, portfolio, prices, sources, queued_candidates, family_signals, cross_sectional, factors_by_symbol)
+    if args.fetch_options and OPTIONS_RISK.allow_options and OPTIONS_RISK.paper_options_enabled and not OPTIONS_RISK.live_options_enabled:
+        option_symbols = [sig.symbol for sig in rank_signals(ensemble_signals) if sig.action in {"BUY", "HOLD"}]
+        for symbol in option_symbols[: args.max_option_symbols]:
+            try:
+                save_option_chain_snapshot(fetch_option_chain_snapshot(symbol, OPTIONS_RISK.min_dte, OPTIONS_RISK.max_dte), OPTIONS_CHAIN_DIR)
+            except Exception as exc:  # network/vendor failures should not block the equity report
+                sources[f"{symbol}:options"] = f"options_unavailable:{type(exc).__name__}"
+    option_chains = load_available_option_chains(OPTIONS_CHAIN_DIR)
+    paper_options = load_option_paper_portfolio()
+    covered_calls = []
+    cash_secured_puts = []
+    option_warnings = []
+    for chain in option_chains:
+        covered_calls.extend(screen_covered_calls(chain, portfolio, OPTIONS_RISK, paper=paper_options))
+        cash_secured_puts.extend(screen_cash_secured_puts(chain, portfolio, OPTIONS_RISK, paper=paper_options))
+        if "synthetic" in chain.source.lower() or "fixture" in chain.source.lower():
+            option_warnings.append(f"{chain.underlying}: option chain source is {chain.source}; paper research only")
+    options_research = {"covered_calls": covered_calls, "cash_secured_puts": cash_secured_puts, "warnings": option_warnings}
+    text = render_report(ensemble_signals, backtests, decisions, portfolio, prices, sources, queued_candidates, family_signals, cross_sectional, factors_by_symbol, options_research)
     path = save_report(text)
     print(path)
     print(text)
