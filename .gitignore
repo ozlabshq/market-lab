@@ -13,6 +13,7 @@ venv/
 .env
 .env.*
 .alpaca.env
+.alpaca.mcp.env
 !.env.example
 
 # OS/editor
