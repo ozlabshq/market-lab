@@ -81,11 +81,9 @@ class AlpacaReadOnlyTests(unittest.TestCase):
             path = Path(td) / ".alpaca.env"
             path.write_text("raw-key\nraw-secret\n")
             client = AlpacaReadOnlyClient(load_alpaca_credentials(path))
+            import io
             from email.message import Message
-            err = urllib.error.HTTPError("https://paper-api.alpaca.markets/v2/account", 401, "Unauthorized", Message(), None)
-            err.fp = tempfile.TemporaryFile()
-            err.fp.write(b'{"message":"unauthorized."}')
-            err.fp.seek(0)
+            err = urllib.error.HTTPError("https://paper-api.alpaca.markets/v2/account", 401, "Unauthorized", Message(), io.BytesIO(b'{"message":"unauthorized."}'))
             with patch("urllib.request.urlopen", side_effect=err):
                 with self.assertRaises(AlpacaAPIError) as ctx:
                     client.account()
