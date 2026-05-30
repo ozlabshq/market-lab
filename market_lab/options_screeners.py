@@ -57,6 +57,10 @@ def _liquid(contract: OptionContract, risk: OptionsRiskConfig) -> bool:
     return q.bid > 0 and q.ask >= q.bid and q.spread_pct <= risk.max_bid_ask_spread_pct and q.open_interest >= risk.min_open_interest and q.volume >= risk.min_volume
 
 
+def _valid_greeks(contract: OptionContract) -> bool:
+    return not contract.greeks.degenerate
+
+
 def _dte_ok(snapshot: OptionChainSnapshot, contract: OptionContract, risk: OptionsRiskConfig, as_of: str | date | None = None) -> bool:
     dte = contract.dte(_as_date(as_of).isoformat())
     return risk.min_dte <= dte <= risk.max_dte
@@ -76,7 +80,7 @@ def screen_covered_calls(snapshot: OptionChainSnapshot, portfolio: Portfolio, ri
     for c in snapshot.contracts:
         if c.option_type != "CALL" or c.strike <= snapshot.underlying_price:
             continue
-        if not _dte_ok(snapshot, c, risk, as_of) or not _liquid(c, risk):
+        if not _dte_ok(snapshot, c, risk, as_of) or not _liquid(c, risk) or not _valid_greeks(c):
             continue
         if abs(c.greeks.delta) > risk.max_abs_short_call_delta:
             continue
@@ -101,7 +105,7 @@ def screen_cash_secured_puts(snapshot: OptionChainSnapshot, portfolio: Portfolio
     for c in snapshot.contracts:
         if c.option_type != "PUT" or c.strike >= snapshot.underlying_price:
             continue
-        if not _dte_ok(snapshot, c, risk, as_of) or not _liquid(c, risk):
+        if not _dte_ok(snapshot, c, risk, as_of) or not _liquid(c, risk) or not _valid_greeks(c):
             continue
         if abs(c.greeks.delta) > risk.max_abs_short_put_delta:
             continue
