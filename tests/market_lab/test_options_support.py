@@ -1,3 +1,4 @@
+import builtins
 import json
 import tempfile
 import unittest
@@ -407,6 +408,63 @@ class OptionsSupportTests(unittest.TestCase):
         put = [c for c in snapshot.contracts if c.option_type == "PUT"][0]
         self.assertGreater(snapshot.underlying_price, 0)
         self.assertGreater(put.greeks.delta, -0.95)
+
+    def test_corrupt_options_paper_state_loads_default_instead_of_crashing(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "paper_options_state.json"
+            path.write_text("{not json")
+            portfolio = load_option_paper_portfolio(path)
+            self.assertEqual(portfolio.cash, 100_000.0)
+            self.assertEqual(portfolio.positions, {})
+            self.assertEqual(portfolio.reserved_cash, 0.0)
+            self.assertEqual(portfolio.reserved_shares, {})
+
+    def test_options_paper_save_uses_atomic_write_under_lock(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            paper = OptionPaperPortfolio(cash=50_000, positions={"SPY-CALL": 5}, reserved_shares={"SPY": 100})
+            save_option_paper_portfolio(paper, path)
+            self.assertTrue(path.exists())
+            loaded = load_option_paper_portfolio(path)
+            self.assertEqual(loaded.cash, 50_000)
+            self.assertEqual(loaded.positions["SPY-CALL"], 5)
+            self.assertEqual(loaded.reserved_shares["SPY"], 100)
+            lock_path = path.with_suffix(path.suffix + ".lock")
+            self.assertTrue(lock_path.exists())
+
+    def test_options_paper_save_gracefully_degrades_without_fcntl(self):
+        original_import = builtins.__import__
+        def fake_import(name, *args, **kwargs):
+            if name == "fcntl":
+                raise ModuleNotFoundError("No module named 'fcntl'")
+            return original_import(name, *args, **kwargs)
+        with tempfile.TemporaryDirectory() as td, patch("builtins.__import__", side_effect=fake_import):
+            path = Path(td) / "state.json"
+            paper = OptionPaperPortfolio(cash=30_000)
+            save_option_paper_portfolio(paper, path)
+            self.assertTrue(path.exists())
+            self.assertEqual(load_option_paper_portfolio(path).cash, 30_000)
+
+    def test_options_paper_ledger_appends_with_fsync(self):
+        from market_lab.options_paper import append_option_paper_ledger, OptionPaperDecision
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "ledger.jsonl"
+            decision = OptionPaperDecision(
+                accepted=True,
+                action="BUY_TO_OPEN",
+                contract_id="SPY-2025-01-01-C-100",
+                contracts=1,
+                price=2.0,
+                premium=200.0,
+                reason="test",
+                timestamp=date.today().isoformat() + "T00:00:00Z",
+                strategy="test",
+            )
+            append_option_paper_ledger(decision, path)
+            self.assertTrue(path.exists())
+            lines = path.read_text().strip().split("\n")
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(json.loads(lines[0])["contract_id"], "SPY-2025-01-01-C-100")
 
 
 if __name__ == "__main__":
