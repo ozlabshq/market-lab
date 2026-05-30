@@ -15,7 +15,7 @@ from .config import DEFAULT_UNIVERSE, EVIDENCE_DIR, LEDGER_PATH, OPTIONS_CHAIN_D
 from .data import Bar, load_cached_prices, load_cached_synthetic_prices
 from .diagnosis import TradeDiagnosis, generate_strategy_health_report
 from .options_data import load_available_option_chains
-from .options_paper import load_option_paper_portfolio
+from .options_paper import build_option_positions_view, load_option_paper_portfolio
 from .options_screeners import screen_cash_secured_puts, screen_covered_calls
 from .signals import cross_sectional_momentum_ranks, generate_ensemble_signal, generate_strategy_signals, rank_signals
 
@@ -176,6 +176,7 @@ def build_dashboard_snapshot(symbols: list[str] | None = None) -> dict:
         if stale_source:
             options_warnings.append(f"{chain.underlying}: synthetic/sample chain source")
     options_mode = "PAPER_ONLY" if OPTIONS_RISK.allow_options and OPTIONS_RISK.paper_options_enabled and not OPTIONS_RISK.live_options_enabled else "DISABLED"
+    paper_positions = build_option_positions_view(paper_options, OPTIONS_CHAIN_DIR)
     options_payload = {
         "mode": options_mode,
         "chain_count": len(option_chains),
@@ -185,6 +186,14 @@ def build_dashboard_snapshot(symbols: list[str] | None = None) -> dict:
         "cash_secured_puts": [asdict(p) for p in cash_secured_puts[:8]],
         "warnings": options_warnings,
         "guardrails": asdict(OPTIONS_RISK),
+        "paper_portfolio": {
+            "cash": paper_options.cash,
+            "available_cash": paper_options.available_cash,
+            "reserved_cash": paper_options.reserved_cash,
+            "reserved_shares": paper_options.reserved_shares,
+            "open_positions": len(paper_positions),
+            "positions": [asdict(v) for v in paper_positions],
+        },
     }
 
     return {
@@ -303,6 +312,16 @@ def render_dashboard_html(snapshot: dict) -> str:
     ) or "<li><b>No cash-secured put candidates</b><span>Need cash, cached chains, and liquidity pass.</span></li>"
     option_warning_rows = "\n".join(f"<li><b>Warning</b><span>{esc(w)}</span></li>" for w in options.get("warnings", [])[:5]) or "<li><b>Guardrails clean</b><span>No options data warnings in current snapshot.</span></li>"
 
+    paper_portfolio = options.get("paper_portfolio", {})
+    paper_pos_rows = "\n".join(
+        f"<li><b>{esc(v['side'])} {esc(v['contracts'])} {esc(v['underlying'])} {esc(v['option_type'])} ${float(v['strike']):.0f}</b><span>expiration {esc(v['expiration'])} · mark ${_money(v['mark'])} · avg ${_money(v['avg_price'])} · P&L {_money(v['unrealized_pnl'])}</span></li>"
+        for v in paper_portfolio.get("positions", [])[:8]
+    ) or "<li><b>No active paper option positions</b><span>Open positions appear after paper orders are placed.</span></li>"
+    paper_reserve_rows = f"""
+    <li><b>Reserved cash</b><span>{_money(paper_portfolio.get('reserved_cash', 0))}</span></li>
+    {''.join(f"<li><b>Reserved shares {esc(sym)}</b><span>{qty}</span></li>" for sym, qty in sorted((paper_portfolio.get('reserved_shares') or {}).items()))}
+    """
+
     report_excerpt = esc(snapshot.get("report_excerpt", ""))
     generated = esc(snapshot["generated_at"])
     equity = snapshot["portfolio"]["equity"]
@@ -386,7 +405,7 @@ def render_dashboard_html(snapshot: dict) -> str:
       </aside>
     </main>
 
-    <section class=\"panel\" style=\"margin-top:16px\"><h2>Options Research — PAPER ONLY</h2><div class=\"grid health-grid\"><div><h3>Covered calls</h3><ul class=\"feed\">{option_call_rows}</ul></div><div><h3>Cash-secured puts</h3><ul class=\"feed\">{option_put_rows}</ul></div></div><h3>Options guardrails</h3><ul class=\"feed\">{option_warning_rows}</ul></section>
+    <section class=\"panel\" style=\"margin-top:16px\"><h2>Options Research — PAPER ONLY</h2><div class=\"grid health-grid\"><div><h3>Covered calls</h3><ul class=\"feed\">{option_call_rows}</ul></div><div><h3>Cash-secured puts</h3><ul class=\"feed\">{option_put_rows}</ul></div></div><h3>Active Paper Positions ({len(paper_portfolio.get('positions', []))} open)</h3><ul class=\"feed\">{paper_pos_rows}</ul><h3>Collateral Reserves</h3><ul class=\"feed\">{paper_reserve_rows}</ul><h3>Options guardrails</h3><ul class=\"feed\">{option_warning_rows}</ul></section>
     <section class=\"panel\" style=\"margin-top:16px\"><h2>Backtest sanity checks</h2><table><thead><tr><th>Symbol</th><th>Strategy</th><th>Return</th><th>Benchmark</th><th>Max DD</th><th>Sharpe</th><th>Trades</th></tr></thead><tbody>{backtest_rows}</tbody></table></section>
     <section class=\"grid main\" style=\"margin-top:16px\"><div class=\"panel\"><h2>Trade diagnoses</h2><ul class=\"feed\">{diagnosis_rows}</ul></div><div class=\"panel\"><h2>Latest report excerpt</h2><pre>{report_excerpt}</pre></div></section>
     <div class=\"footer\">Generated {generated} · API: /api/snapshot · Source: local Market Lab artifacts only</div>

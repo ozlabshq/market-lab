@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from .broker import Portfolio
-from .config import OPTIONS_PAPER_LEDGER_PATH, OPTIONS_PAPER_STATE_PATH, OptionsRiskConfig, OPTIONS_RISK, ensure_dirs
+from .config import OPTIONS_CHAIN_DIR, OPTIONS_PAPER_LEDGER_PATH, OPTIONS_PAPER_STATE_PATH, OptionsRiskConfig, OPTIONS_RISK, ensure_dirs
 from .options_data import OptionContract
 
 OptionAction = Literal["BUY_TO_OPEN", "SELL_TO_OPEN", "BUY_TO_CLOSE", "SELL_TO_CLOSE"]
@@ -196,3 +196,72 @@ def append_option_paper_ledger(decision: OptionPaperDecision, path: Path = OPTIO
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as f:
         f.write(json.dumps(asdict(decision), sort_keys=True) + "\n")
+
+
+def _parse_contract_id(contract_id: str) -> dict[str, str | float]:
+    """Parse a canonical contract_id into descriptive pieces: underlying, expiration, type, strike."""
+    parts = contract_id.split("-")
+    underlying = parts[0] if parts else ""
+    option_type = "CALL" if "C" in parts else "PUT"
+    strike = float(parts[-1]) if parts else 0.0
+    expiration_parts = parts[1:-2]
+    expiration = "-".join(expiration_parts) if expiration_parts else ""
+    return {"underlying": underlying, "expiration": expiration, "option_type": option_type, "strike": strike}
+
+
+@dataclass
+class OptionPositionView:
+    """Human-readable enriched view of a single active paper option position."""
+    contract_id: str
+    underlying: str
+    expiration: str
+    option_type: str
+    strike: float
+    contracts: int
+    avg_price: float
+    side: str
+    mark: float
+    unrealized_pnl: float
+
+
+def build_option_positions_view(
+    paper: OptionPaperPortfolio,
+    chain_dir: Path = OPTIONS_CHAIN_DIR,
+) -> list[OptionPositionView]:
+    """Build enriched position views for each non-zero paper option position.
+
+    Prices quotes from cached option chains if available; falls back to avg_price as mark.
+    """
+    from .options_data import load_option_chain_snapshot
+    views: list[OptionPositionView] = []
+    quotes: dict[str, float] = {}
+    for cid, qty in paper.positions.items():
+        if qty == 0:
+            continue
+        parsed = _parse_contract_id(cid)
+        underlying = parsed.get("underlying", "")
+        if underlying and (cid not in quotes):
+            try:
+                chain = load_option_chain_snapshot(underlying, chain_dir)
+                for contract in chain.contracts:
+                    quotes[contract.contract_id] = contract.quote.mid
+            except (OSError, FileNotFoundError):
+                pass
+        avg = paper.avg_price.get(cid, 0.0)
+        mark = quotes.get(cid, avg)
+        unrealized = (mark - avg) * qty * 100
+        views.append(
+            OptionPositionView(
+                contract_id=cid,
+                underlying=str(underlying),
+                expiration=str(parsed.get("expiration", "")),
+                option_type=str(parsed.get("option_type", "")),
+                strike=float(parsed.get("strike", 0.0)),
+                contracts=abs(qty),
+                avg_price=avg,
+                side="LONG" if qty > 0 else "SHORT",
+                mark=mark,
+                unrealized_pnl=round(unrealized, 2),
+            )
+        )
+    return views

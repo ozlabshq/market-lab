@@ -153,7 +153,7 @@ def main() -> int:
         if "synthetic" in chain.source.lower() or "fixture" in chain.source.lower():
             option_warnings.append(f"{chain.underlying}: option chain source is {chain.source}; paper research only")
     options_research = {"covered_calls": covered_calls, "cash_secured_puts": cash_secured_puts, "warnings": option_warnings}
-    text = render_report(ensemble_signals, backtests, decisions, portfolio, prices, sources, queued_candidates, family_signals, cross_sectional, factors_by_symbol, options_research)
+    text = render_report(ensemble_signals, backtests, decisions, portfolio, prices, sources, queued_candidates, family_signals, cross_sectional, factors_by_symbol, options_research, paper=paper_options)
     path = save_report(text)
     print(path)
     print(text)

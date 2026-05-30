@@ -19,6 +19,7 @@ from market_lab.options_data import (
 from market_lab.options_paper import (
     OptionPaperOrder,
     OptionPaperPortfolio,
+    build_option_positions_view,
     evaluate_option_paper_order,
     load_option_paper_portfolio,
     save_option_paper_portfolio,
@@ -122,6 +123,23 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertEqual(loaded.reserved_shares["SPY"], 100)
         self.assertEqual(loaded.positions["SPY-2026-02-06-C-105.00"], 1)
 
+    def test_build_option_positions_view_parses_contract_id_and_returns_enriched_view(self):
+        paper = OptionPaperPortfolio(
+            cash=20_000,
+            positions={"SPY-2026-07-15-C-105.00": 1, "QQQ-2026-07-15-P-200.00": -1},
+            avg_price={"SPY-2026-07-15-C-105.00": 2.0, "QQQ-2026-07-15-P-200.00": 1.5},
+        )
+        views = build_option_positions_view(paper)
+        self.assertEqual(len(views), 2)
+        spy = next((v for v in views if v.underlying == "SPY"), None)
+        qqq = next((v for v in views if v.underlying == "QQQ"), None)
+        self.assertIsNotNone(spy)
+        self.assertIsNotNone(qqq)
+        self.assertEqual(spy.option_type, "CALL")
+        self.assertEqual(spy.strike, 105.0)
+        self.assertEqual(spy.side, "LONG")
+        self.assertEqual(qqq.side, "SHORT")
+
     def test_report_and_dashboard_surface_options_research_read_only(self):
         snapshot = sample_snapshot()
         risk = OptionsRiskConfig(paper_options_enabled=True)
@@ -146,6 +164,51 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertGreaterEqual(dash["options"]["covered_call_count"], 1)
         self.assertIn("Options Research", html)
         self.assertIn("PAPER ONLY", html)
+    def test_report_includes_active_paper_positions_and_reserves_when_paper_provided(self):
+        snapshot = sample_snapshot()
+        risk = OptionsRiskConfig(paper_options_enabled=True)
+        portfolio = Portfolio(cash=20_000, positions={"SPY": Position("SPY", 100, 90.0)})
+        paper = OptionPaperPortfolio(
+            cash=21_000,
+            reserved_cash=9_500,
+            reserved_shares={"SPY": 100},
+            positions={snapshot.contracts[0].contract_id: -1},
+            avg_price={snapshot.contracts[0].contract_id: 2.0},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            save_option_chain_snapshot(snapshot, data_dir / "options" / "chains")
+            text = render_report([], [], [], portfolio, {"SPY": 100}, {"SPY": "cache"}, paper=paper)
+
+        self.assertIn("Active Paper Option Positions", text)
+        self.assertIn("Paper Collateral Reserves", text)
+        self.assertIn("Reserved cash: $9,500.00", text)
+        self.assertIn("Reserved shares SPY: 100", text)
+
+    def test_dashboard_api_includes_paper_portfolio_and_positions(self):
+        snapshot = sample_snapshot()
+        risk = OptionsRiskConfig(paper_options_enabled=True)
+        portfolio = Portfolio(cash=20_000, positions={"SPY": Position("SPY", 100, 90.0)})
+        paper = OptionPaperPortfolio(
+            cash=21_000,
+            reserved_cash=9_500,
+            reserved_shares={"SPY": 100},
+            positions={snapshot.contracts[0].contract_id: -1},
+            avg_price={snapshot.contracts[0].contract_id: 2.0},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            save_option_chain_snapshot(snapshot, data_dir / "options" / "chains")
+            save_portfolio(portfolio, data_dir / "mock_portfolio_state.json")
+            save_option_paper_portfolio(paper, data_dir / "options" / "paper_options_state.json")
+            with patch("market_lab.webapp.OPTIONS_CHAIN_DIR", data_dir / "options" / "chains"), patch("market_lab.webapp.STATE_PATH", data_dir / "mock_portfolio_state.json"), patch("market_lab.webapp.OPTIONS_RISK", risk), patch("market_lab.webapp.load_option_paper_portfolio", lambda: load_option_paper_portfolio(data_dir / "options" / "paper_options_state.json")):
+                dash = build_dashboard_snapshot(["SPY"])
+
+        self.assertIn("paper_portfolio", dash["options"])
+        self.assertEqual(dash["options"]["paper_portfolio"]["cash"], 21_000)
+        self.assertEqual(dash["options"]["paper_portfolio"]["reserved_cash"], 9_500)
+        self.assertEqual(dash["options"]["paper_portfolio"]["reserved_shares"]["SPY"], 100)
+        self.assertEqual(len(dash["options"]["paper_portfolio"]["positions"]), 1)
     def test_paper_short_put_can_close_using_released_collateral(self):
         risk = OptionsRiskConfig(paper_options_enabled=True, max_total_options_assignment_pct=1.0)
         put = sample_snapshot().contracts[1]
