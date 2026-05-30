@@ -90,7 +90,7 @@ class AlpacaReadOnlyTests(unittest.TestCase):
                 with self.assertRaises(AlpacaAPIError) as ctx:
                     client.account()
             self.assertEqual(ctx.exception.status, 401)
-            self.assertIn("Unauthorized", str(ctx.exception))
+            self.assertIn("unauthorized", str(ctx.exception))
 
 
 if __name__ == "__main__":

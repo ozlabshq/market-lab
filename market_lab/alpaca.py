@@ -118,7 +118,14 @@ class AlpacaReadOnlyClient:
                 return json.loads(body) if body else {}
         except urllib.error.HTTPError as exc:
             body = exc.read().decode(errors="ignore")
-            message = body.strip() or exc.reason or "Alpaca HTTP error"
+            message = body.strip() or str(exc.reason) or "Alpaca HTTP error"
+            if body.strip():
+                try:
+                    parsed = json.loads(body)
+                    if isinstance(parsed, dict) and parsed.get("message"):
+                        message = str(parsed["message"])
+                except json.JSONDecodeError:
+                    pass
             raise AlpacaAPIError(exc.code, message) from exc
         except urllib.error.URLError as exc:
             raise AlpacaAPIError(None, str(exc.reason)) from exc
