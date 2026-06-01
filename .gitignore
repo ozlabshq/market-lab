@@ -21,6 +21,12 @@ venv/
 .idea/
 .vscode/
 
+# Claude Code local config
+.claude/
+
+# Git worktrees (linked worktree checkouts)
+.worktrees/
+
 # Market Lab generated data/state
 /data/
 data/market-lab/prices/
