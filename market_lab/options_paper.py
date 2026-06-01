@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -9,6 +12,39 @@ from typing import Literal
 from .broker import Portfolio
 from .config import OPTIONS_CHAIN_DIR, OPTIONS_PAPER_LEDGER_PATH, OPTIONS_PAPER_STATE_PATH, OptionsRiskConfig, OPTIONS_RISK, ensure_dirs
 from .options_data import OptionContract
+
+
+@contextmanager
+def _portfolio_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("w") as lock_file:
+        locked = False
+        try:
+            try:
+                import fcntl  # type: ignore
+            except ModuleNotFoundError:
+                fcntl = None  # type: ignore[assignment]
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                locked = True
+            yield
+        finally:
+            if locked:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)  # type: ignore[union-attr]
+                except Exception:
+                    pass
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as tmp:
+        tmp.write(text)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp_path = Path(tmp.name)
+    os.replace(tmp_path, path)
 
 OptionAction = Literal["BUY_TO_OPEN", "SELL_TO_OPEN", "BUY_TO_CLOSE", "SELL_TO_CLOSE"]
 
@@ -171,8 +207,8 @@ def evaluate_option_paper_order(paper: OptionPaperPortfolio, equity_portfolio: P
 
 def save_option_paper_portfolio(portfolio: OptionPaperPortfolio, path: Path = OPTIONS_PAPER_STATE_PATH) -> None:
     ensure_dirs()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(portfolio), indent=2, sort_keys=True))
+    with _portfolio_lock(path):
+        _atomic_write_text(path, json.dumps(asdict(portfolio), indent=2, sort_keys=True))
 
 
 def load_option_paper_portfolio(path: Path = OPTIONS_PAPER_STATE_PATH) -> OptionPaperPortfolio:
@@ -196,6 +232,8 @@ def append_option_paper_ledger(decision: OptionPaperDecision, path: Path = OPTIO
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as f:
         f.write(json.dumps(asdict(decision), sort_keys=True) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def _parse_contract_id(contract_id: str) -> dict[str, str | float]:
