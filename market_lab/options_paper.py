@@ -102,6 +102,8 @@ def _opening_guardrail_violation(paper: OptionPaperPortfolio, order: OptionPaper
         return "option DTE outside configured paper gate"
     if q.bid <= 0 or q.ask < q.bid or q.spread_pct > risk.max_bid_ask_spread_pct or q.open_interest < risk.min_open_interest or q.volume < risk.min_volume:
         return "option liquidity/spread outside configured paper gate"
+    if contract.greeks.degenerate:
+        return "option greeks are degenerate (low-quality estimate); not eligible for paper gate"
     if order.action == "SELL_TO_OPEN" and contract.option_type == "CALL" and abs(contract.greeks.delta) > risk.max_abs_short_call_delta:
         return "short call delta exceeds configured paper gate"
     if order.action == "SELL_TO_OPEN" and contract.option_type == "PUT" and abs(contract.greeks.delta) > risk.max_abs_short_put_delta:
