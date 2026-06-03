@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from .broker import Portfolio
-from .config import OPTIONS_CHAIN_DIR, OPTIONS_PAPER_LEDGER_PATH, OPTIONS_PAPER_STATE_PATH, OptionsRiskConfig, OPTIONS_RISK, ensure_dirs
+from .config import OPTIONS_CHAIN_DIR, OPTIONS_PAPER_CANDIDATES_PATH, OPTIONS_PAPER_LEDGER_PATH, OPTIONS_PAPER_STATE_PATH, OptionsRiskConfig, OPTIONS_RISK, ensure_dirs
 from .options_data import OptionContract
 
 
@@ -47,6 +47,16 @@ def _atomic_write_text(path: Path, text: str) -> None:
     os.replace(tmp_path, path)
 
 OptionAction = Literal["BUY_TO_OPEN", "SELL_TO_OPEN", "BUY_TO_CLOSE", "SELL_TO_CLOSE"]
+
+
+@dataclass(frozen=True)
+class OptionPaperCandidate:
+    action: OptionAction
+    contract: OptionContract
+    contracts: int
+    strategy: str
+    reference_price: float
+    signal_as_of: str
 
 
 @dataclass(frozen=True)
@@ -254,6 +264,62 @@ def _parse_contract_id(contract_id: str) -> dict[str, str | float]:
     expiration = "-".join(parts[-5:-2])
     underlying = "-".join(parts[:-5])
     return {"underlying": underlying, "expiration": expiration, "option_type": option_type, "strike": strike}
+
+
+def save_option_paper_candidates(
+    candidates: list[OptionPaperCandidate],
+    path: Path = OPTIONS_PAPER_CANDIDATES_PATH,
+) -> None:
+    ensure_dirs()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps(asdict(candidate), sort_keys=True) for candidate in candidates]
+    _atomic_write_text(path, ("\n".join(lines) + "\n") if lines else "")
+
+
+def _candidate_from_record(record: dict) -> OptionPaperCandidate:
+    from .options_data import _contract_from_record
+
+    contract_data = record.get("contract", {})
+    contract = _contract_from_record(contract_data, record.get("signal_as_of", ""))
+    return OptionPaperCandidate(
+        action=record["action"],
+        contract=contract,
+        contracts=int(record.get("contracts", 0)),
+        strategy=record.get("strategy", "paper_options"),
+        reference_price=float(record.get("reference_price", contract.quote.mid)),
+        signal_as_of=record.get("signal_as_of", ""),
+    )
+
+
+def load_option_paper_candidates(path: Path = OPTIONS_PAPER_CANDIDATES_PATH) -> list[OptionPaperCandidate]:
+    if not path.exists():
+        return []
+    candidates: list[OptionPaperCandidate] = []
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            candidates.append(_candidate_from_record(json.loads(line)))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+    return candidates
+
+
+def execute_option_paper_candidate(
+    candidate: OptionPaperCandidate,
+    paper: OptionPaperPortfolio,
+    equity_portfolio: Portfolio,
+    risk: OptionsRiskConfig = OPTIONS_RISK,
+) -> OptionPaperDecision:
+    order = OptionPaperOrder(
+        candidate.action,
+        candidate.contract,
+        candidate.contracts,
+        candidate.contract.quote.mid or candidate.reference_price,
+        candidate.strategy,
+        candidate.signal_as_of,
+    )
+    return evaluate_option_paper_order(paper, equity_portfolio, order, risk)
 
 
 @dataclass

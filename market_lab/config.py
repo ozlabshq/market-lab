@@ -15,6 +15,7 @@ OPTIONS_DIR = DATA_DIR / "options"
 OPTIONS_CHAIN_DIR = OPTIONS_DIR / "chains"
 OPTIONS_PAPER_STATE_PATH = OPTIONS_DIR / "paper_options_state.json"
 OPTIONS_PAPER_LEDGER_PATH = OPTIONS_DIR / "paper_options_ledger.jsonl"
+OPTIONS_PAPER_CANDIDATES_PATH = OPTIONS_DIR / "paper_options_candidates.jsonl"
 LEDGER_PATH = DATA_DIR / "mock_ledger.jsonl"
 
 VT_TREND_DIR = DATA_DIR / "vt_trend"

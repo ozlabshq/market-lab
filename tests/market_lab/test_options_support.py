@@ -18,11 +18,16 @@ from market_lab.options_data import (
     save_option_chain_snapshot,
 )
 from market_lab.options_paper import (
+    OptionPaperCandidate,
     OptionPaperOrder,
     OptionPaperPortfolio,
+    append_option_paper_ledger,
     build_option_positions_view,
+    execute_option_paper_candidate,
     evaluate_option_paper_order,
+    load_option_paper_candidates,
     load_option_paper_portfolio,
+    save_option_paper_candidates,
     save_option_paper_portfolio,
 )
 from market_lab.options_screeners import screen_cash_secured_puts, screen_covered_calls
@@ -180,6 +185,36 @@ class OptionsSupportTests(unittest.TestCase):
 
         self.assertEqual(view.mark, 2.0)
         self.assertEqual(view.unrealized_pnl, 0.0)
+
+    def test_paper_option_candidates_roundtrip_and_execute_to_position(self):
+        snapshot = sample_snapshot()
+        put = snapshot.contracts[1]
+        candidate = OptionPaperCandidate("SELL_TO_OPEN", put, 1, "cash_secured_put", put.quote.mid, snapshot.as_of)
+        equity = Portfolio(cash=100_000)
+        paper = OptionPaperPortfolio(cash=100_000)
+        risk = OptionsRiskConfig(paper_options_enabled=True, max_assignment_notional_pct=0.60)
+
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            candidates_path = data_dir / "paper_options_candidates.jsonl"
+            state_path = data_dir / "paper_options_state.json"
+            ledger_path = data_dir / "paper_options_ledger.jsonl"
+            save_option_paper_candidates([candidate], candidates_path)
+
+            loaded = load_option_paper_candidates(candidates_path)
+            decision = execute_option_paper_candidate(loaded[0], paper, equity, risk)
+            if decision.accepted:
+                save_option_paper_portfolio(paper, state_path)
+                append_option_paper_ledger(decision, ledger_path)
+
+            save_option_paper_candidates([], candidates_path)
+            reloaded = load_option_paper_portfolio(state_path)
+            remaining = load_option_paper_candidates(candidates_path)
+
+        self.assertTrue(decision.accepted, decision.reason)
+        self.assertEqual(reloaded.positions[put.contract_id], -1)
+        self.assertEqual(reloaded.reserved_cash, 9500.0)
+        self.assertEqual(remaining, [])
 
     def test_report_and_dashboard_surface_options_research_read_only(self):
         snapshot = sample_snapshot()

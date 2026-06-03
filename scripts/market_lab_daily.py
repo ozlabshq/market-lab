@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -19,7 +20,15 @@ from market_lab.config import DEFAULT_UNIVERSE, RISK, OPTIONS_CHAIN_DIR, OPTIONS
 from market_lab.data import fetch_prices
 from market_lab.factors import fetch_factors
 from market_lab.options_data import fetch_option_chain_snapshot, load_available_option_chains, save_option_chain_snapshot
-from market_lab.options_paper import load_option_paper_portfolio
+from market_lab.options_paper import (
+    OptionPaperCandidate,
+    append_option_paper_ledger,
+    execute_option_paper_candidate,
+    load_option_paper_candidates,
+    load_option_paper_portfolio,
+    save_option_paper_candidates,
+    save_option_paper_portfolio,
+)
 from market_lab.options_screeners import screen_cash_secured_puts, screen_covered_calls
 from market_lab.report import render_report, save_report
 from market_lab.signals import (
@@ -54,6 +63,54 @@ def _candidate_from_signal(sig, signal_date: str, portfolio_equity: float) -> Or
     return OrderCandidate("BUY", sig.symbol, qty, sig.strategy, sig.confidence, sig.reason, signal_date, sig.close)
 
 
+def _dedupe_option_candidates(candidates: list[OptionPaperCandidate]) -> list[OptionPaperCandidate]:
+    by_key = {}
+    for candidate in candidates:
+        key = (candidate.action, candidate.contract.contract_id, candidate.strategy)
+        by_key[key] = candidate
+    return list(by_key.values())
+
+
+def _option_candidate_from_csp(candidate) -> OptionPaperCandidate:
+    return OptionPaperCandidate(
+        "SELL_TO_OPEN",
+        candidate.contract,
+        candidate.contracts,
+        "cash_secured_put",
+        candidate.contract.quote.mid,
+        date.today().isoformat(),
+    )
+
+
+def _option_candidate_from_cc(candidate) -> OptionPaperCandidate:
+    return OptionPaperCandidate(
+        "SELL_TO_OPEN",
+        candidate.contract,
+        candidate.contracts,
+        "covered_call",
+        candidate.contract.quote.mid,
+        date.today().isoformat(),
+    )
+
+
+def _execute_due_option_candidates(portfolio):
+    pending = load_option_paper_candidates()
+    if not pending:
+        return [], []
+    paper = load_option_paper_portfolio()
+    decisions = []
+    remaining = []
+    for candidate in pending:
+        decision = execute_option_paper_candidate(candidate, paper, portfolio, OPTIONS_RISK)
+        decisions.append(decision)
+        append_option_paper_ledger(decision)
+        if not decision.accepted:
+            remaining.append(candidate)
+    save_option_paper_portfolio(paper)
+    save_option_paper_candidates(remaining)
+    return decisions, remaining
+
+
 def _execute_due_candidates(bars_by_symbol, prices):
     pending = load_order_candidates()
     if not pending:
@@ -85,7 +142,10 @@ def main() -> int:
     parser.add_argument("--execute-pending-candidates", action="store_true", help="Fill previously queued candidates at the latest bar open when a later bar is available")
     parser.add_argument("--require-live-data", action="store_true", help="Abort candidate execution/queueing if any symbol falls back to synthetic data")
     parser.add_argument("--fetch-options", action="store_true", help="Fetch and cache yfinance option chains before screening paper options")
+    parser.add_argument("--queue-option-candidates", action="store_true", help="Queue top guarded paper option candidates; no fill until --execute-paper-option-candidates")
+    parser.add_argument("--execute-paper-option-candidates", action="store_true", help="Execute queued paper option candidates into the paper-only options ledger")
     parser.add_argument("--max-option-symbols", type=int, default=8, help="Maximum symbols to refresh option chains for when --fetch-options is enabled")
+    parser.add_argument("--max-option-orders", type=int, default=1, help="Maximum paper option candidates to queue per run")
     parser.add_argument("--max-orders", type=int, default=3)
     args = parser.parse_args()
 
@@ -98,7 +158,9 @@ def main() -> int:
     bars_by_symbol = {}
     factors_by_symbol = {}
     decisions = []
+    option_decisions = []
     queued_candidates = []
+    queued_option_candidates = []
 
     for symbol in args.symbols:
         bars, source = fetch_prices(symbol, days=args.days, prefer_network=args.network)
@@ -143,6 +205,9 @@ def main() -> int:
             except Exception as exc:  # network/vendor failures should not block the equity report
                 sources[f"{symbol}:options"] = f"options_unavailable:{type(exc).__name__}"
     option_chains = load_available_option_chains(OPTIONS_CHAIN_DIR)
+    if args.execute_paper_option_candidates:
+        executed_options, _remaining_options = _execute_due_option_candidates(portfolio)
+        option_decisions.extend(executed_options)
     paper_options = load_option_paper_portfolio()
     covered_calls = []
     cash_secured_puts = []
@@ -152,7 +217,16 @@ def main() -> int:
         cash_secured_puts.extend(screen_cash_secured_puts(chain, portfolio, OPTIONS_RISK, paper=paper_options))
         if "synthetic" in chain.source.lower() or "fixture" in chain.source.lower():
             option_warnings.append(f"{chain.underlying}: option chain source is {chain.source}; paper research only")
-    options_research = {"covered_calls": covered_calls, "cash_secured_puts": cash_secured_puts, "warnings": option_warnings}
+    if args.queue_option_candidates:
+        selected_options = []
+        selected_options.extend(_option_candidate_from_csp(candidate) for candidate in cash_secured_puts[: args.max_option_orders])
+        remaining_slots = max(args.max_option_orders - len(selected_options), 0)
+        if remaining_slots:
+            selected_options.extend(_option_candidate_from_cc(candidate) for candidate in covered_calls[:remaining_slots])
+        if selected_options:
+            queued_option_candidates = selected_options
+            save_option_paper_candidates(_dedupe_option_candidates(load_option_paper_candidates() + queued_option_candidates))
+    options_research = {"covered_calls": covered_calls, "cash_secured_puts": cash_secured_puts, "warnings": option_warnings, "option_decisions": option_decisions, "queued_option_candidates": queued_option_candidates}
     text = render_report(ensemble_signals, backtests, decisions, portfolio, prices, sources, queued_candidates, family_signals, cross_sectional, factors_by_symbol, options_research, paper=paper_options)
     path = save_report(text)
     print(path)
