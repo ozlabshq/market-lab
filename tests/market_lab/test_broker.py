@@ -66,5 +66,24 @@ class BrokerTests(unittest.TestCase):
             self.assertTrue(d.accepted)
             self.assertTrue(state.exists())
             self.assertTrue(ledger.exists())
+    def test_place_mock_order_with_custom_paths_does_not_touch_defaults(self):
+        with tempfile.TemporaryDirectory() as td:
+            custom_state = Path(td) / "custom" / "portfolio.json"
+            custom_ledger = Path(td) / "custom" / "ledger.jsonl"
+            default_state = Path(td) / "default_state.json"
+            default_ledger = Path(td) / "default_ledger.jsonl"
+            # Seed default paths with existing state
+            from market_lab.broker import save_portfolio
+            save_portfolio(Portfolio(cash=100_000.0), default_state)
+            default_ledger.write_text("")
+            d = place_mock_order("BUY", "SPY", 10, 100, {"SPY": 100}, custom_state, custom_ledger)
+            self.assertTrue(d.accepted)
+            self.assertTrue(custom_state.exists())
+            self.assertTrue(custom_ledger.exists())
+            # Default paths should be unchanged
+            default_portfolio = load_portfolio(default_state)
+            self.assertEqual(default_portfolio.cash, 100_000.0)
+            self.assertEqual(default_portfolio.positions, {})
+            self.assertEqual(default_ledger.read_text().strip(), "")
 
 if __name__ == '__main__': unittest.main()

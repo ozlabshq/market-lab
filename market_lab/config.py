@@ -16,6 +16,13 @@ OPTIONS_CHAIN_DIR = OPTIONS_DIR / "chains"
 OPTIONS_PAPER_STATE_PATH = OPTIONS_DIR / "paper_options_state.json"
 OPTIONS_PAPER_LEDGER_PATH = OPTIONS_DIR / "paper_options_ledger.jsonl"
 LEDGER_PATH = DATA_DIR / "mock_ledger.jsonl"
+
+VT_TREND_DIR = DATA_DIR / "vt_trend"
+VT_TREND_STATE = VT_TREND_DIR / "portfolio_state.json"
+VT_TREND_LEDGER = VT_TREND_DIR / "ledger.jsonl"
+VT_TREND_CANDIDATES = VT_TREND_DIR / "pending_candidates.jsonl"
+VT_TREND_REPORT_DIR = VT_TREND_DIR / "reports"
+VT_TREND_STARTING_CASH = 25_000.0
 PENDING_CANDIDATES_PATH = DATA_DIR / "pending_order_candidates.jsonl"
 STATE_PATH = DATA_DIR / "mock_portfolio_state.json"
 
@@ -65,5 +72,5 @@ RISK = RiskConfig()
 OPTIONS_RISK = OptionsRiskConfig()
 
 def ensure_dirs() -> None:
-    for path in (DATA_DIR, PRICE_DIR, SYNTHETIC_PRICE_DIR, REPORT_DIR, FACTOR_DIR, EVIDENCE_DIR, OPTIONS_DIR, OPTIONS_CHAIN_DIR):
+    for path in (DATA_DIR, PRICE_DIR, SYNTHETIC_PRICE_DIR, REPORT_DIR, FACTOR_DIR, EVIDENCE_DIR, OPTIONS_DIR, OPTIONS_CHAIN_DIR, VT_TREND_DIR, VT_TREND_REPORT_DIR):
         path.mkdir(parents=True, exist_ok=True)

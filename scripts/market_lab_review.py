@@ -75,9 +75,11 @@ def _has_later_sell(decision: OrderDecision, decisions: list[OrderDecision]) -> 
     )
 
 
-def _latest_trade_diagnoses() -> list[TradeDiagnosis]:
+def _latest_trade_diagnoses(trades_path: Path | None = None) -> list[TradeDiagnosis]:
+    if trades_path is None:
+        trades_path = evidence_stream_path("trades", EVIDENCE_DIR)
     latest: dict[str, TradeDiagnosis] = {}
-    for record in load_evidence_records(evidence_stream_path("trades", EVIDENCE_DIR)):
+    for record in load_evidence_records(trades_path):
         diagnosis = TradeDiagnosis(**record)
         current = latest.get(diagnosis.decision_id)
         if current is None or diagnosis.holding_bars >= current.holding_bars:
@@ -108,23 +110,18 @@ def _open_buy_decision_ids(decisions: list[OrderDecision]) -> set[str]:
     return {lot_id for lots in lots_by_symbol.values() for lot_id, qty in lots if qty > 0}
 
 
-def diagnose_new_mock_decisions(days: int = 45, prefer_network: bool = False) -> list[TradeDiagnosis]:
+def diagnose_new_mock_decisions(days: int = 45, prefer_network: bool = False, ledger_path: Path = LEDGER_PATH, trades_stream_name: str = "trades") -> list[TradeDiagnosis]:
     ensure_dirs()
-    trades_path = evidence_stream_path("trades", EVIDENCE_DIR)
-    decisions = _load_accepted_decisions()
+    trades_path = evidence_stream_path(trades_stream_name, EVIDENCE_DIR)
+    decisions = _load_accepted_decisions(ledger_path)
     latest_existing = _latest_trade_records_by_decision(trades_path)
     open_buy_ids = _open_buy_decision_ids(decisions)
     diagnoses: list[TradeDiagnosis] = []
     for decision in decisions:
         if decision.side != "BUY":
-            # Accepted SELL decisions close/reduce long positions in the current mock
-            # broker. They are accounted for by FIFO lot reduction in _open_buy_decision_ids.
             continue
         if decision_id(decision) not in open_buy_ids:
-            # Fully closed lots wait for a future round-trip reconstruction gate.
             continue
-        # Use only bars on/after the fill date. If there is no post-entry bar yet,
-        # wait instead of fabricating a diagnosis from pre-entry prices.
         bars, source = fetch_prices(decision.symbol, days=days, prefer_network=prefer_network)
         entry_date = _decision_date(decision)
         if not bars or bars[0].date > entry_date:
@@ -153,9 +150,10 @@ def diagnose_new_mock_decisions(days: int = 45, prefer_network: bool = False) ->
     return diagnoses
 
 
-def write_health_reports() -> list[dict]:
-    trades = _latest_trade_diagnoses()
-    health_path = evidence_stream_path("strategy_health", EVIDENCE_DIR)
+def write_health_reports(trades_stream_name: str = "trades", health_stream_name: str = "strategy_health") -> list[dict]:
+    trades_path = evidence_stream_path(trades_stream_name, EVIDENCE_DIR)
+    health_path = evidence_stream_path(health_stream_name, EVIDENCE_DIR)
+    trades = _latest_trade_diagnoses(trades_path)
     existing_by_strategy: dict[str, dict] = {}
     for record in load_evidence_records(health_path):
         strategy = record.get("strategy")
@@ -177,10 +175,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Review Market Lab mock trades and append council evidence artifacts")
     parser.add_argument("--days", type=int, default=45)
     parser.add_argument("--network", action="store_true")
+    parser.add_argument("--ledger-path", type=Path, default=LEDGER_PATH, help="Path to ledger JSONL to diagnose (default: main mock ledger)")
+    parser.add_argument("--trades-stream", type=str, default="trades", help="Evidence stream name for trade diagnoses")
+    parser.add_argument("--health-stream", type=str, default="strategy_health", help="Evidence stream name for health reports")
     args = parser.parse_args()
 
-    diagnoses = diagnose_new_mock_decisions(days=args.days, prefer_network=args.network)
-    health_reports = write_health_reports()
+    diagnoses = diagnose_new_mock_decisions(
+        days=args.days,
+        prefer_network=args.network,
+        ledger_path=args.ledger_path,
+        trades_stream_name=args.trades_stream,
+    )
+    health_reports = write_health_reports(
+        trades_stream_name=args.trades_stream,
+        health_stream_name=args.health_stream,
+    )
     print(f"new_diagnoses={len(diagnoses)}")
     print(f"health_reports={len(health_reports)}")
     if health_reports:

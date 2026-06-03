@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from .backtest import moving_average_cross_backtest
 from .broker import load_order_candidates, load_portfolio
-from .config import DEFAULT_UNIVERSE, EVIDENCE_DIR, LEDGER_PATH, OPTIONS_CHAIN_DIR, OPTIONS_RISK, PENDING_CANDIDATES_PATH, REPORT_DIR, RISK, STATE_PATH
+from .config import DEFAULT_UNIVERSE, EVIDENCE_DIR, LEDGER_PATH, OPTIONS_CHAIN_DIR, OPTIONS_RISK, PENDING_CANDIDATES_PATH, REPORT_DIR, RISK, STATE_PATH, VT_TREND_LEDGER, VT_TREND_STATE
 from .data import Bar, load_cached_prices, load_cached_synthetic_prices
 from .diagnosis import TradeDiagnosis, generate_strategy_health_report
 from .options_data import load_available_option_chains
@@ -414,6 +414,50 @@ def render_dashboard_html(snapshot: dict) -> str:
 </html>"""
 
 
+def build_vt_trend_snapshot() -> dict:
+    from .broker import load_portfolio
+    from .signals import generate_vt_trend_signal
+    if not VT_TREND_STATE.exists():
+        return {"active": False, "message": "vt_trend tracking not started yet"}
+    portfolio = load_portfolio(VT_TREND_STATE)
+    bars, source = _load_best_bars("SPY")
+    price = bars[-1].close if bars else 0.0
+    equity = portfolio.equity({"SPY": price})
+    pos = portfolio.positions.get("SPY")
+    pos_qty = pos.quantity if pos else 0
+    weight = (pos_qty * price) / equity if equity > 0 else 0.0
+    sig = generate_vt_trend_signal("SPY", bars) if bars else None
+    fills = 0
+    if VT_TREND_LEDGER.exists():
+        try:
+            with VT_TREND_LEDGER.open() as f:
+                fills = sum(1 for line in f if line.strip() and json.loads(line).get("accepted"))
+        except Exception:
+            pass
+    return {
+        "active": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "mode": "READ_ONLY_VIEW",
+        "symbol": "SPY",
+        "source": source,
+        "portfolio": {
+            "cash": portfolio.cash,
+            "equity": equity,
+            "position_qty": pos_qty,
+            "position_avg_price": pos.avg_price if pos else 0.0,
+            "position_weight": weight,
+        },
+        "signal": {
+            "action": sig.action if sig else None,
+            "confidence": sig.confidence if sig else 0.0,
+            "target_weight": sig.target_weight if sig else 0.0,
+            "reason": sig.reason if sig else "",
+            "evidence": dict(sig.evidence) if sig and sig.evidence else {},
+        } if sig else None,
+        "cumulative_fills": fills,
+    }
+
+
 class MarketLabDashboardHandler(BaseHTTPRequestHandler):
     server_version = "MarketLabDashboard/0.1"
 
@@ -421,6 +465,9 @@ class MarketLabDashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/snapshot":
             _json_response(self, build_dashboard_snapshot())
+            return
+        if parsed.path == "/api/vt-trend-snapshot":
+            _json_response(self, build_vt_trend_snapshot())
             return
         if parsed.path in ("/", "/index.html"):
             body = render_dashboard_html(build_dashboard_snapshot()).encode()
