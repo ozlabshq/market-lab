@@ -1,14 +1,50 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 
 from .broker import Portfolio
-from .config import OPTIONS_PAPER_LEDGER_PATH, OPTIONS_PAPER_STATE_PATH, OptionsRiskConfig, OPTIONS_RISK, ensure_dirs
+from .config import OPTIONS_CHAIN_DIR, OPTIONS_PAPER_LEDGER_PATH, OPTIONS_PAPER_STATE_PATH, OptionsRiskConfig, OPTIONS_RISK, ensure_dirs
 from .options_data import OptionContract
+
+
+@contextmanager
+def _portfolio_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("w") as lock_file:
+        locked = False
+        try:
+            try:
+                import fcntl  # type: ignore
+            except ModuleNotFoundError:
+                fcntl = None  # type: ignore[assignment]
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                locked = True
+            yield
+        finally:
+            if locked:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)  # type: ignore[union-attr]
+                except Exception:
+                    pass
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as tmp:
+        tmp.write(text)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp_path = Path(tmp.name)
+    os.replace(tmp_path, path)
 
 OptionAction = Literal["BUY_TO_OPEN", "SELL_TO_OPEN", "BUY_TO_CLOSE", "SELL_TO_CLOSE"]
 
@@ -66,6 +102,8 @@ def _opening_guardrail_violation(paper: OptionPaperPortfolio, order: OptionPaper
         return "option DTE outside configured paper gate"
     if q.bid <= 0 or q.ask < q.bid or q.spread_pct > risk.max_bid_ask_spread_pct or q.open_interest < risk.min_open_interest or q.volume < risk.min_volume:
         return "option liquidity/spread outside configured paper gate"
+    if contract.greeks.degenerate:
+        return "option greeks are degenerate (low-quality estimate); not eligible for paper gate"
     if order.action == "SELL_TO_OPEN" and contract.option_type == "CALL" and abs(contract.greeks.delta) > risk.max_abs_short_call_delta:
         return "short call delta exceeds configured paper gate"
     if order.action == "SELL_TO_OPEN" and contract.option_type == "PUT" and abs(contract.greeks.delta) > risk.max_abs_short_put_delta:
@@ -171,8 +209,8 @@ def evaluate_option_paper_order(paper: OptionPaperPortfolio, equity_portfolio: P
 
 def save_option_paper_portfolio(portfolio: OptionPaperPortfolio, path: Path = OPTIONS_PAPER_STATE_PATH) -> None:
     ensure_dirs()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(portfolio), indent=2, sort_keys=True))
+    with _portfolio_lock(path):
+        _atomic_write_text(path, json.dumps(asdict(portfolio), indent=2, sort_keys=True))
 
 
 def load_option_paper_portfolio(path: Path = OPTIONS_PAPER_STATE_PATH) -> OptionPaperPortfolio:
@@ -196,3 +234,81 @@ def append_option_paper_ledger(decision: OptionPaperDecision, path: Path = OPTIO
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as f:
         f.write(json.dumps(asdict(decision), sort_keys=True) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _parse_contract_id(contract_id: str) -> dict[str, str | float]:
+    """Parse canonical contract_id from the right so hyphenated underlyings survive."""
+    parts = contract_id.split("-")
+    if len(parts) < 6:
+        underlying = parts[0] if parts else ""
+        option_marker = parts[-2] if len(parts) >= 2 else ""
+        option_type = "CALL" if option_marker == "C" else "PUT"
+        strike = float(parts[-1]) if parts else 0.0
+        expiration = "-".join(parts[1:-2]) if len(parts) > 3 else ""
+        return {"underlying": underlying, "expiration": expiration, "option_type": option_type, "strike": strike}
+    strike = float(parts[-1])
+    option_marker = parts[-2]
+    option_type = "CALL" if option_marker == "C" else "PUT"
+    expiration = "-".join(parts[-5:-2])
+    underlying = "-".join(parts[:-5])
+    return {"underlying": underlying, "expiration": expiration, "option_type": option_type, "strike": strike}
+
+
+@dataclass
+class OptionPositionView:
+    """Human-readable enriched view of a single active paper option position."""
+    contract_id: str
+    underlying: str
+    expiration: str
+    option_type: str
+    strike: float
+    contracts: int
+    avg_price: float
+    side: str
+    mark: float
+    unrealized_pnl: float
+
+
+def build_option_positions_view(
+    paper: OptionPaperPortfolio,
+    chain_dir: Path = OPTIONS_CHAIN_DIR,
+) -> list[OptionPositionView]:
+    """Build enriched position views for each non-zero paper option position.
+
+    Prices quotes from cached option chains if available; falls back to avg_price as mark.
+    """
+    from .options_data import load_option_chain_snapshot
+    views: list[OptionPositionView] = []
+    quotes: dict[str, float] = {}
+    for cid, qty in paper.positions.items():
+        if qty == 0:
+            continue
+        parsed = _parse_contract_id(cid)
+        underlying = parsed.get("underlying", "")
+        if underlying and (cid not in quotes):
+            try:
+                chain = load_option_chain_snapshot(underlying, chain_dir)
+                for contract in chain.contracts:
+                    quotes[contract.contract_id] = contract.quote.mid
+            except (OSError, FileNotFoundError, json.JSONDecodeError, TypeError, ValueError, KeyError):
+                pass
+        avg = paper.avg_price.get(cid, 0.0)
+        mark = quotes.get(cid, avg)
+        unrealized = (mark - avg) * qty * 100
+        views.append(
+            OptionPositionView(
+                contract_id=cid,
+                underlying=str(underlying),
+                expiration=str(parsed.get("expiration", "")),
+                option_type=str(parsed.get("option_type", "")),
+                strike=float(parsed.get("strike", 0.0)),
+                contracts=abs(qty),
+                avg_price=avg,
+                side="LONG" if qty > 0 else "SHORT",
+                mark=mark,
+                unrealized_pnl=round(unrealized, 2),
+            )
+        )
+    return views

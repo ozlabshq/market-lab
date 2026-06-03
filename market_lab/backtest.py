@@ -178,3 +178,130 @@ def moving_average_cross_backtest(
     final_equity = cash + qty * bars[-1].close
     equity_points.append((len(bars) - 1, final_equity))
     return _windowed_stats(symbol, "ma_cross", bars, equity_points, trades, initial_cash, slow, evaluation_start_index)
+
+
+def run_signal_backtest_with_sizing(
+    symbol: str,
+    bars: list[Bar],
+    signal_func: SignalFunction,
+    min_history: int = 120,
+    initial_cash: float = 10_000.0,
+    execution: ExecutionModel | None = None,
+    evaluation_start_index: int | None = None,
+) -> BacktestResult:
+    """Generic long-only signal backtest with fractional position sizing.
+
+    Decision uses bars through close of day t. Fill occurs at next bar open t+1.
+    Supports variable target weights (e.g., volatility targeting) and stateful
+    drawdown guards (level-2 flat with re-entry rule).
+    """
+    execution = execution or ExecutionModel()
+    strategy_name = getattr(signal_func, "__name__", "signal").replace("generate_", "").replace("_signal", "")
+    if len(bars) < min_history + 2:
+        return BacktestResult(symbol, 0, 0.0, 0.0, 0.0, 0.0, initial_cash, strategy_name)
+    cash = initial_cash
+    qty = 0.0
+    trades = 0
+    equity_points: list[tuple[int, float]] = []
+    pending_weight: float | None = None
+    level_2_triggered = False
+    level_1_triggered = False
+    for i in range(min_history, len(bars) - 1):
+        if evaluation_start_index is not None and i < evaluation_start_index - 1:
+            equity_points.append((i, cash + qty * bars[i].close))
+            pending_weight = None
+            continue
+        if evaluation_start_index is not None and i == evaluation_start_index:
+            equity_points.append((i, cash + qty * bars[i].open))
+        if pending_weight is not None:
+            reference_price = bars[i].open
+            equity_now = cash + qty * reference_price
+            target_qty_estimate = (pending_weight * equity_now) / reference_price if reference_price > 0 else 0.0
+            delta_estimate = target_qty_estimate - qty
+            fill_side = "BUY" if delta_estimate > 0 else "SELL"
+            fill_price = execution.fill_price(fill_side, reference_price)
+            target_notional = pending_weight * equity_now
+            target_qty = target_notional / fill_price if fill_price > 0 else 0.0
+            delta = target_qty - qty
+            if abs(delta) > 0.0001:
+                if delta > 0:
+                    max_affordable_delta = max((cash - execution.commission_per_trade) / fill_price, 0.0)
+                    buy_delta = min(delta, max_affordable_delta)
+                    cost = buy_delta * fill_price + execution.commission_per_trade
+                    if buy_delta > 0.0001 and cash >= cost:
+                        cash -= cost
+                        qty += buy_delta
+                        if evaluation_start_index is None or i >= evaluation_start_index:
+                            trades += 1
+                else:
+                    sell_qty = abs(delta)
+                    proceeds = sell_qty * fill_price - execution.commission_per_trade
+                    if qty >= sell_qty - 0.0001:
+                        cash += proceeds
+                        qty -= sell_qty
+                        if evaluation_start_index is None or i >= evaluation_start_index:
+                            trades += 1
+            pending_weight = None
+        equity_points.append((i, cash + qty * bars[i].close))
+        sig = signal_func(symbol, bars[: i + 1])
+        evidence = sig.evidence if isinstance(sig.evidence, dict) else {}
+        current_notional = qty * bars[i].close
+        total_equity = cash + current_notional
+        current_weight = current_notional / total_equity if total_equity > 0 else 0.0
+        desired_weight = 0.0
+        if level_2_triggered:
+            if evidence.get("reentry_ok", False):
+                level_2_triggered = False
+                level_1_triggered = False
+                desired_weight = sig.target_weight if sig.action == "BUY" else 0.0
+            else:
+                desired_weight = 0.0
+        else:
+            dd_level = evidence.get("drawdown_level", 0)
+            if dd_level == 2:
+                level_2_triggered = True
+                level_1_triggered = False
+                desired_weight = 0.0
+            elif dd_level == 1:
+                if level_1_triggered:
+                    desired_weight = current_weight
+                else:
+                    desired_weight = current_weight * 0.5
+                    level_1_triggered = True
+            else:
+                level_1_triggered = False
+                desired_weight = sig.target_weight if sig.action == "BUY" else 0.0
+        if abs(desired_weight - current_weight) > 0.001:
+            pending_weight = desired_weight
+    final_bar = bars[-1]
+    if pending_weight is not None:
+        reference_price = final_bar.open
+        equity_now = cash + qty * reference_price
+        target_qty_estimate = (pending_weight * equity_now) / reference_price if reference_price > 0 else 0.0
+        delta_estimate = target_qty_estimate - qty
+        fill_side = "BUY" if delta_estimate > 0 else "SELL"
+        fill_price = execution.fill_price(fill_side, reference_price)
+        target_notional = pending_weight * equity_now
+        target_qty = target_notional / fill_price if fill_price > 0 else 0.0
+        delta = target_qty - qty
+        if abs(delta) > 0.0001:
+            if delta > 0:
+                max_affordable_delta = max((cash - execution.commission_per_trade) / fill_price, 0.0)
+                buy_delta = min(delta, max_affordable_delta)
+                cost = buy_delta * fill_price + execution.commission_per_trade
+                if buy_delta > 0.0001 and cash >= cost:
+                    cash -= cost
+                    qty += buy_delta
+                    if evaluation_start_index is None or len(bars) - 1 >= evaluation_start_index:
+                        trades += 1
+            else:
+                sell_qty = abs(delta)
+                proceeds = sell_qty * fill_price - execution.commission_per_trade
+                if qty >= sell_qty - 0.0001:
+                    cash += proceeds
+                    qty -= sell_qty
+                    if evaluation_start_index is None or len(bars) - 1 >= evaluation_start_index:
+                        trades += 1
+    final_equity = cash + qty * final_bar.close
+    equity_points.append((len(bars) - 1, final_equity))
+    return _windowed_stats(symbol, strategy_name, bars, equity_points, trades, initial_cash, min_history, evaluation_start_index)

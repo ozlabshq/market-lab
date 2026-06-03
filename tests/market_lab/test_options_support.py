@@ -1,3 +1,4 @@
+import builtins
 import json
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ from market_lab.options_data import (
 from market_lab.options_paper import (
     OptionPaperOrder,
     OptionPaperPortfolio,
+    build_option_positions_view,
     evaluate_option_paper_order,
     load_option_paper_portfolio,
     save_option_paper_portfolio,
@@ -122,6 +124,63 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertEqual(loaded.reserved_shares["SPY"], 100)
         self.assertEqual(loaded.positions["SPY-2026-02-06-C-105.00"], 1)
 
+    def test_build_option_positions_view_parses_contract_id_and_returns_enriched_view(self):
+        paper = OptionPaperPortfolio(
+            cash=20_000,
+            positions={"SPY-2026-07-15-C-105.00": 1, "QQQ-2026-07-15-P-200.00": -1},
+            avg_price={"SPY-2026-07-15-C-105.00": 2.0, "QQQ-2026-07-15-P-200.00": 1.5},
+        )
+        views = build_option_positions_view(paper)
+        self.assertEqual(len(views), 2)
+        spy = next((v for v in views if v.underlying == "SPY"), None)
+        qqq = next((v for v in views if v.underlying == "QQQ"), None)
+        self.assertIsNotNone(spy)
+        self.assertIsNotNone(qqq)
+        self.assertEqual(spy.option_type, "CALL")
+        self.assertEqual(spy.strike, 105.0)
+        self.assertEqual(spy.side, "LONG")
+        self.assertEqual(qqq.side, "SHORT")
+
+    def test_build_option_positions_view_parses_c_ticker_put_from_suffix(self):
+        paper = OptionPaperPortfolio(
+            positions={"C-2026-07-15-P-50.00": -1},
+            avg_price={"C-2026-07-15-P-50.00": 1.25},
+        )
+
+        view = build_option_positions_view(paper)[0]
+
+        self.assertEqual(view.underlying, "C")
+        self.assertEqual(view.option_type, "PUT")
+        self.assertEqual(view.strike, 50.0)
+
+    def test_build_option_positions_view_parses_hyphenated_ticker_from_right(self):
+        paper = OptionPaperPortfolio(
+            positions={"BRK-B-2026-07-15-C-400.00": 1},
+            avg_price={"BRK-B-2026-07-15-C-400.00": 3.5},
+        )
+
+        view = build_option_positions_view(paper)[0]
+
+        self.assertEqual(view.underlying, "BRK-B")
+        self.assertEqual(view.expiration, "2026-07-15")
+        self.assertEqual(view.option_type, "CALL")
+        self.assertEqual(view.strike, 400.0)
+
+    def test_build_option_positions_view_falls_back_on_malformed_cached_chain(self):
+        paper = OptionPaperPortfolio(
+            positions={"SPY-2026-07-15-C-105.00": 1},
+            avg_price={"SPY-2026-07-15-C-105.00": 2.0},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            chain_dir = Path(td)
+            chain_dir.mkdir(parents=True, exist_ok=True)
+            (chain_dir / "SPY.json").write_text("not json")
+
+            view = build_option_positions_view(paper, chain_dir)[0]
+
+        self.assertEqual(view.mark, 2.0)
+        self.assertEqual(view.unrealized_pnl, 0.0)
+
     def test_report_and_dashboard_surface_options_research_read_only(self):
         snapshot = sample_snapshot()
         risk = OptionsRiskConfig(paper_options_enabled=True)
@@ -146,6 +205,51 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertGreaterEqual(dash["options"]["covered_call_count"], 1)
         self.assertIn("Options Research", html)
         self.assertIn("PAPER ONLY", html)
+    def test_report_includes_active_paper_positions_and_reserves_when_paper_provided(self):
+        snapshot = sample_snapshot()
+        risk = OptionsRiskConfig(paper_options_enabled=True)
+        portfolio = Portfolio(cash=20_000, positions={"SPY": Position("SPY", 100, 90.0)})
+        paper = OptionPaperPortfolio(
+            cash=21_000,
+            reserved_cash=9_500,
+            reserved_shares={"SPY": 100},
+            positions={snapshot.contracts[0].contract_id: -1},
+            avg_price={snapshot.contracts[0].contract_id: 2.0},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            save_option_chain_snapshot(snapshot, data_dir / "options" / "chains")
+            text = render_report([], [], [], portfolio, {"SPY": 100}, {"SPY": "cache"}, paper=paper)
+
+        self.assertIn("Active Paper Option Positions", text)
+        self.assertIn("Paper Collateral Reserves", text)
+        self.assertIn("Reserved cash: $9,500.00", text)
+        self.assertIn("Reserved shares SPY: 100", text)
+
+    def test_dashboard_api_includes_paper_portfolio_and_positions(self):
+        snapshot = sample_snapshot()
+        risk = OptionsRiskConfig(paper_options_enabled=True)
+        portfolio = Portfolio(cash=20_000, positions={"SPY": Position("SPY", 100, 90.0)})
+        paper = OptionPaperPortfolio(
+            cash=21_000,
+            reserved_cash=9_500,
+            reserved_shares={"SPY": 100},
+            positions={snapshot.contracts[0].contract_id: -1},
+            avg_price={snapshot.contracts[0].contract_id: 2.0},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            save_option_chain_snapshot(snapshot, data_dir / "options" / "chains")
+            save_portfolio(portfolio, data_dir / "mock_portfolio_state.json")
+            save_option_paper_portfolio(paper, data_dir / "options" / "paper_options_state.json")
+            with patch("market_lab.webapp.OPTIONS_CHAIN_DIR", data_dir / "options" / "chains"), patch("market_lab.webapp.STATE_PATH", data_dir / "mock_portfolio_state.json"), patch("market_lab.webapp.OPTIONS_RISK", risk), patch("market_lab.webapp.load_option_paper_portfolio", lambda: load_option_paper_portfolio(data_dir / "options" / "paper_options_state.json")):
+                dash = build_dashboard_snapshot(["SPY"])
+
+        self.assertIn("paper_portfolio", dash["options"])
+        self.assertEqual(dash["options"]["paper_portfolio"]["cash"], 21_000)
+        self.assertEqual(dash["options"]["paper_portfolio"]["reserved_cash"], 9_500)
+        self.assertEqual(dash["options"]["paper_portfolio"]["reserved_shares"]["SPY"], 100)
+        self.assertEqual(len(dash["options"]["paper_portfolio"]["positions"]), 1)
     def test_paper_short_put_can_close_using_released_collateral(self):
         risk = OptionsRiskConfig(paper_options_enabled=True, max_total_options_assignment_pct=1.0)
         put = sample_snapshot().contracts[1]
@@ -407,6 +511,63 @@ class OptionsSupportTests(unittest.TestCase):
         put = [c for c in snapshot.contracts if c.option_type == "PUT"][0]
         self.assertGreater(snapshot.underlying_price, 0)
         self.assertGreater(put.greeks.delta, -0.95)
+
+    def test_corrupt_options_paper_state_loads_default_instead_of_crashing(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "paper_options_state.json"
+            path.write_text("{not json")
+            portfolio = load_option_paper_portfolio(path)
+            self.assertEqual(portfolio.cash, 100_000.0)
+            self.assertEqual(portfolio.positions, {})
+            self.assertEqual(portfolio.reserved_cash, 0.0)
+            self.assertEqual(portfolio.reserved_shares, {})
+
+    def test_options_paper_save_uses_atomic_write_under_lock(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            paper = OptionPaperPortfolio(cash=50_000, positions={"SPY-CALL": 5}, reserved_shares={"SPY": 100})
+            save_option_paper_portfolio(paper, path)
+            self.assertTrue(path.exists())
+            loaded = load_option_paper_portfolio(path)
+            self.assertEqual(loaded.cash, 50_000)
+            self.assertEqual(loaded.positions["SPY-CALL"], 5)
+            self.assertEqual(loaded.reserved_shares["SPY"], 100)
+            lock_path = path.with_suffix(path.suffix + ".lock")
+            self.assertTrue(lock_path.exists())
+
+    def test_options_paper_save_gracefully_degrades_without_fcntl(self):
+        original_import = builtins.__import__
+        def fake_import(name, *args, **kwargs):
+            if name == "fcntl":
+                raise ModuleNotFoundError("No module named 'fcntl'")
+            return original_import(name, *args, **kwargs)
+        with tempfile.TemporaryDirectory() as td, patch("builtins.__import__", side_effect=fake_import):
+            path = Path(td) / "state.json"
+            paper = OptionPaperPortfolio(cash=30_000)
+            save_option_paper_portfolio(paper, path)
+            self.assertTrue(path.exists())
+            self.assertEqual(load_option_paper_portfolio(path).cash, 30_000)
+
+    def test_options_paper_ledger_appends_with_fsync(self):
+        from market_lab.options_paper import append_option_paper_ledger, OptionPaperDecision
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "ledger.jsonl"
+            decision = OptionPaperDecision(
+                accepted=True,
+                action="BUY_TO_OPEN",
+                contract_id="SPY-2025-01-01-C-100",
+                contracts=1,
+                price=2.0,
+                premium=200.0,
+                reason="test",
+                timestamp=date.today().isoformat() + "T00:00:00Z",
+                strategy="test",
+            )
+            append_option_paper_ledger(decision, path)
+            self.assertTrue(path.exists())
+            lines = path.read_text().strip().split("\n")
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(json.loads(lines[0])["contract_id"], "SPY-2025-01-01-C-100")
 
 
 if __name__ == "__main__":

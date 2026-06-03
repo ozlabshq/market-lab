@@ -5,10 +5,11 @@ from pathlib import Path
 
 from .backtest import BacktestResult
 from .broker import OrderCandidate, OrderDecision, Portfolio
-from .config import REPORT_DIR, ensure_dirs
+from .config import OPTIONS_CHAIN_DIR, REPORT_DIR, ensure_dirs
 from .factors import FactorSnapshot
-from .signals import CrossSectionalRank, Signal, rank_signals
+from .options_paper import OptionPaperPortfolio, build_option_positions_view, load_option_paper_portfolio
 from .options_screeners import CashSecuredPutCandidate, CoveredCallCandidate
+from .signals import CrossSectionalRank, Signal, rank_signals
 
 
 def render_report(
@@ -23,6 +24,7 @@ def render_report(
     cross_sectional: list[CrossSectionalRank] | None = None,
     factor_snapshots: dict[str, FactorSnapshot] | None = None,
     options_research: dict[str, list[CoveredCallCandidate] | list[CashSecuredPutCandidate] | list[str]] | None = None,
+    paper: OptionPaperPortfolio | None = None,
 ) -> str:
     ensure_dirs()
     candidates = candidates or []
@@ -120,6 +122,24 @@ def render_report(
         lines.append("- None")
     for w in warnings[:10]:
         lines.append(f"- {w}")
+
+    # Paper option positions & reserves
+    if paper is not None:
+        paper_positions = build_option_positions_view(paper, OPTIONS_CHAIN_DIR)
+        lines += ["", "### Active Paper Option Positions"]
+        if not paper_positions:
+            lines.append("- No open paper option positions")
+        else:
+            for v in paper_positions:
+                pnl_str = f"P&L ${v.unrealized_pnl:,.2f}" if v.unrealized_pnl != 0.0 else "P&L —"
+                lines.append(f"- {v.side} {v.contracts} {v.underlying} {v.option_type} ${v.strike:.2f} exp {v.expiration}: mark ${v.mark:.2f}, avg ${v.avg_price:.2f}, {pnl_str}")
+        lines += ["", "### Paper Collateral Reserves"]
+        lines.append(f"- Reserved cash: ${paper.reserved_cash:,.2f}")
+        if paper.reserved_shares:
+            for sym, qty in sorted(paper.reserved_shares.items()):
+                lines.append(f"- Reserved shares {sym}: {qty}")
+        else:
+            lines.append("- No reserved shares")
 
     lines += ["", "## Next-session order candidates queued"]
     if not candidates:

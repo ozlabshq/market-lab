@@ -51,6 +51,16 @@ def rolling_volatility(values: list[float], window: int = 20, annualization: int
         out.append(pstdev(sample) * math.sqrt(annualization) if len(sample) >= 2 else None)
     return out
 
+def rolling_peak(values: list[float], window: int) -> list[float | None]:
+    if window <= 0: raise ValueError("window must be positive")
+    out: list[float | None] = []
+    for i in range(len(values)):
+        if i + 1 >= window:
+            out.append(max(values[i - window + 1 : i + 1]))
+        else:
+            out.append(None)
+    return out
+
 def max_drawdown(values: list[float]) -> float:
     peak=-float('inf'); mdd=0.0
     for v in values:

@@ -246,6 +246,63 @@ class DiagnosisCouncilTests(unittest.TestCase):
             self.assertEqual(diagnoses[0].holding_bars, 3)
             self.assertEqual(len(latest), 1)
             self.assertEqual(latest[0].holding_bars, 3)
+    def test_review_script_is_idempotent_for_same_open_trade_snapshot(self):
+        with tempfile.TemporaryDirectory() as td:
+            evidence_dir = Path(td) / "evidence"
+            decision = OrderDecision(
+                True,
+                "BUY",
+                "SPY",
+                10,
+                100.0,
+                100.0,
+                "accepted",
+                "2026-01-03T15:00:00Z",
+                strategy="tsmom",
+                execution_date="2026-01-03",
+            )
+            fetched = bars_from_closes([100.0, 101.0, 102.0], start=date(2026, 1, 3))
+
+            with (
+                patch.object(market_lab_review, "EVIDENCE_DIR", evidence_dir),
+                patch.object(market_lab_review, "_load_accepted_decisions", return_value=[decision]),
+                patch.object(market_lab_review, "fetch_prices", return_value=(fetched, "cache")),
+            ):
+                first = market_lab_review.diagnose_new_mock_decisions(days=3)
+                second = market_lab_review.diagnose_new_mock_decisions(days=3)
+                records = load_evidence_records(market_lab_review.evidence_stream_path("trades", evidence_dir))
+
+            self.assertEqual(len(first), 1)
+            self.assertEqual(second, [])
+            self.assertEqual(len(records), 1)
+
+    def test_write_health_reports_is_idempotent_for_unchanged_latest_trades(self):
+        with tempfile.TemporaryDirectory() as td:
+            evidence_dir = Path(td) / "evidence"
+            decision = OrderDecision(
+                True,
+                "BUY",
+                "SPY",
+                10,
+                100.0,
+                100.0,
+                "accepted",
+                "2026-01-03T15:00:00Z",
+                strategy="tsmom",
+                execution_date="2026-01-03",
+            )
+            diagnosis = diagnose_trade(decision, bars_from_closes([100.0, 101.0, 102.0], start=date(2026, 1, 3)), strategy="tsmom")
+
+            with patch.object(market_lab_review, "EVIDENCE_DIR", evidence_dir):
+                market_lab_review.append_atomic_jsonl_batch([diagnosis.as_record()], market_lab_review.evidence_stream_path("trades", evidence_dir))
+                first = market_lab_review.write_health_reports()
+                second = market_lab_review.write_health_reports()
+                records = load_evidence_records(market_lab_review.evidence_stream_path("strategy_health", evidence_dir))
+
+            self.assertEqual(len(first), 1)
+            self.assertEqual(second, [])
+            self.assertEqual(len(records), 1)
+
     def test_review_script_keeps_open_lot_after_partial_sell(self):
         with tempfile.TemporaryDirectory() as td:
             evidence_dir = Path(td) / "evidence"

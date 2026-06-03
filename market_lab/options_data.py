@@ -39,6 +39,7 @@ class OptionGreeks:
     theta: float
     vega: float
     implied_volatility: float
+    degenerate: bool = False
 
 
 @dataclass(frozen=True)
@@ -73,17 +74,17 @@ def _norm_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
-def _approx_delta(option_type: OptionType, underlying_price: float, strike: float, dte: int, implied_volatility: float) -> float:
+def _approx_delta(option_type: OptionType, underlying_price: float, strike: float, dte: int, implied_volatility: float) -> tuple[float, bool]:
     if underlying_price <= 0 or strike <= 0 or dte <= 0 or implied_volatility <= 0:
         moneyness = underlying_price / strike if strike else 1.0
         if option_type == "CALL":
-            return max(0.05, min(0.95, moneyness - 0.5))
-        return -max(0.05, min(0.95, 1.5 - moneyness))
+            return max(0.05, min(0.95, moneyness - 0.5)), True
+        return -max(0.05, min(0.95, 1.5 - moneyness)), True
     t = max(dte / 365.0, 1 / 365)
     sigma = max(implied_volatility, 0.01)
     d1 = (math.log(underlying_price / strike) + 0.5 * sigma * sigma * t) / (sigma * math.sqrt(t))
     call_delta = _norm_cdf(d1)
-    return call_delta if option_type == "CALL" else call_delta - 1.0
+    return call_delta if option_type == "CALL" else call_delta - 1.0, False
 
 
 def _float_value(row, name: str, default: float = 0.0) -> float:
@@ -114,7 +115,7 @@ def _contracts_from_frame(frame, symbol: str, expiration: str, option_type: Opti
         iv = _float_value(row, "impliedVolatility")
         if strike <= 0 or mid <= 0:
             continue
-        delta = _approx_delta(option_type, underlying_price, strike, dte, iv)
+        delta, is_degenerate = _approx_delta(option_type, underlying_price, strike, dte, iv)
         out.append(
             OptionContract(
                 symbol.upper(),
@@ -122,7 +123,7 @@ def _contracts_from_frame(frame, symbol: str, expiration: str, option_type: Opti
                 strike,
                 option_type,
                 OptionQuote(bid, ask, mid, _int_value(row, "volume"), _int_value(row, "openInterest")),
-                OptionGreeks(delta, 0.0, 0.0, 0.0, iv),
+                OptionGreeks(delta, 0.0, 0.0, 0.0, iv, is_degenerate),
             )
         )
     return out
@@ -178,20 +179,38 @@ def save_option_chain_snapshot(snapshot: OptionChainSnapshot, chain_dir: Path = 
     return path
 
 
+def _legacy_degenerate_from_record(c: dict, as_of: str) -> bool:
+    greeks = c.get("greeks", {})
+    iv = float(greeks.get("implied_volatility", 0.0) or 0.0)
+    try:
+        expiry = date.fromisoformat(str(c.get("expiration", ""))[:10])
+        as_of_date = date.fromisoformat(str(as_of)[:10])
+        dte = (expiry - as_of_date).days
+    except ValueError:
+        dte = 0
+    delta = float(greeks.get("delta", 0.0) or 0.0)
+    return iv <= 0 or dte <= 0 or abs(delta) <= 0
+
+
+def _contract_from_record(c: dict, as_of: str) -> OptionContract:
+    greeks_data = dict(c["greeks"])
+    if "degenerate" not in greeks_data:
+        greeks_data["degenerate"] = _legacy_degenerate_from_record(c, as_of)
+    return OptionContract(
+        underlying=c["underlying"],
+        expiration=c["expiration"],
+        strike=float(c["strike"]),
+        option_type=c["option_type"],
+        quote=OptionQuote(**c["quote"]),
+        greeks=OptionGreeks(**greeks_data),
+    )
+
+
 def load_option_chain_snapshot(symbol: str, chain_dir: Path = OPTIONS_CHAIN_DIR) -> OptionChainSnapshot:
     path = _snapshot_path(symbol, chain_dir)
     data = json.loads(path.read_text())
-    contracts = [
-        OptionContract(
-            underlying=c["underlying"],
-            expiration=c["expiration"],
-            strike=float(c["strike"]),
-            option_type=c["option_type"],
-            quote=OptionQuote(**c["quote"]),
-            greeks=OptionGreeks(**c["greeks"]),
-        )
-        for c in data.get("contracts", [])
-    ]
+    contracts = [_contract_from_record(c, data.get("as_of", "")) for c in data.get("contracts", [])]
+
     return OptionChainSnapshot(
         underlying=data["underlying"],
         underlying_price=float(data["underlying_price"]),
