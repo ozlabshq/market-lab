@@ -5,7 +5,7 @@ from statistics import mean
 
 from .data import Bar
 from .factors import FactorSnapshot, factor_score
-from .indicators import ema, returns, rolling_volatility, rsi, sma
+from .indicators import ema, returns, rolling_peak, rolling_volatility, rsi, sma
 
 
 @dataclass(frozen=True)
@@ -147,6 +147,75 @@ def generate_rsi_pullback_signal(symbol: str, bars: list[Bar]) -> Signal:
     if s100 and close < s100:
         return Signal(symbol, "SELL", 0.35, "RSI pullback model off: close below SMA100 regime filter", close, r14, s20, s50, vol20, "rsi_pullback", 0.0, {"five_day_return": five_day_ret})
     return Signal(symbol, "HOLD", 0.0, f"RSI pullback inactive: RSI {r14:.1f} in {'up' if up_regime else 'non-up'} regime" if r14 is not None else "RSI unavailable", close, r14, s20, s50, vol20, "rsi_pullback", 0.0, {"five_day_return": five_day_ret})
+
+
+def generate_vt_trend_signal(symbol: str, bars: list[Bar], target_vol: float = 0.15, max_leverage: float = 1.0, vol_floor: float = 0.05) -> Signal:
+    """Volatility-targeted trend following with drawdown guard.
+
+    Literature basis: Moreira & Muir (2017) volatility-managed portfolios;
+    Moskowitz, Ooi & Pedersen (2012) TSMOM vol scaling.
+    """
+    needed = 120
+    if len(bars) < needed:
+        return _insufficient(symbol, bars, "vt_trend", needed)
+    closes = [b.close for b in bars]
+    close = closes[-1]
+    vol20 = rolling_volatility(closes, 20)[-1] or 0.0
+    s100 = sma(closes, 100)[-1]
+    s20 = sma(closes, 20)[-1]
+    s50 = sma(closes, 50)[-1]
+    r14 = rsi(closes, 14)[-1]
+    peak_90d = max(closes[-90:]) if len(closes) >= 90 else close
+    drawdown = close / peak_90d - 1 if peak_90d > 0 else 0.0
+    trend_up = bool(s100 and close > s100)
+    exposure = target_vol / max(vol20, vol_floor)
+    full_target_weight = _clamp(exposure, 0.10, max_leverage)
+    drawdown_level = 0
+    reentry_ok = trend_up and close > 0.90 * peak_90d
+    if exposure < 0.10:
+        action = "SELL"
+        target_weight = 0.0
+        reason = f"vt_trend exposure floor: raw exposure {exposure:.2f}; go flat"
+        confidence = 0.45
+    elif vol20 > 1.00:
+        action = "SELL"
+        target_weight = 0.0
+        reason = f"vt_trend vol spike guard: vol20 {vol20:.0%}; go flat"
+        confidence = _clamp(0.3 + vol20 * 0.1)
+    elif drawdown <= -0.20 + 1e-12:
+        action = "SELL"
+        target_weight = 0.0
+        drawdown_level = 2
+        reason = f"vt_trend drawdown level 2: {drawdown:.1%} below 90d peak; go flat"
+        confidence = _clamp(0.4 + abs(drawdown))
+    elif drawdown <= -0.15:
+        action = "SELL"
+        target_weight = full_target_weight * 0.5
+        drawdown_level = 1
+        reason = f"vt_trend drawdown level 1: {drawdown:.1%} below 90d peak; reduce to 50%"
+        confidence = _clamp(0.3 + abs(drawdown))
+    elif not trend_up:
+        action = "SELL"
+        target_weight = 0.0
+        reason = f"vt_trend trend break: close {close:.2f} below SMA100 {s100:.2f}"
+        confidence = _clamp(0.3 + abs(close / s100 - 1) if s100 else 0.0)
+    else:
+        action = "BUY"
+        target_weight = full_target_weight
+        reason = f"vt_trend trend up: exposure {exposure:.2f}, vol {vol20:.0%}, weight {target_weight:.2f}"
+        confidence = _clamp(full_target_weight * 0.5)
+    evidence = {
+        "target_vol": target_vol,
+        "vol20": vol20,
+        "exposure": exposure,
+        "full_target_weight": full_target_weight,
+        "peak_90d": peak_90d,
+        "drawdown": drawdown,
+        "drawdown_level": drawdown_level,
+        "reentry_ok": reentry_ok,
+        "trend_up": trend_up,
+    }
+    return Signal(symbol, action, confidence, reason, close, r14, s20, s50, vol20, "vt_trend", target_weight, evidence)
 
 
 def generate_strategy_signals(symbol: str, bars: list[Bar]) -> list[Signal]:

@@ -9,8 +9,9 @@ from market_lab.signals import (
     cross_sectional_momentum_ranks,
     generate_strategy_signals,
     generate_tsmom_signal,
+    generate_vt_trend_signal,
 )
-from market_lab.backtest import run_signal_backtest
+from market_lab.backtest import ExecutionModel, run_signal_backtest, run_signal_backtest_with_sizing
 from market_lab.broker import OrderCandidate, candidate_to_order_at_open
 
 
@@ -99,6 +100,159 @@ class ResearchStrategyTests(unittest.TestCase):
             self.assertTrue(decision.accepted)
             self.assertTrue(state_path.exists())
             self.assertTrue(ledger_path.exists())
+
+    # --- vt_trend tests ---
+    # --- vt_trend tests ---
+
+    def test_vt_trend_vol_scaling_reduces_size_in_spikes(self):
+        def _prices_from_rets(rets, start=100):
+            prices = [start]
+            for r in rets:
+                prices.append(prices[-1] * (1 + r))
+            return prices
+
+        # Low vol ~10% annualized (daily std ~0.0063)
+        low_rets = [0.001 + 0.0063 * (1 if i % 2 == 0 else -1) for i in range(179)]
+        low_vol = _prices_from_rets(low_rets)
+        sig_low = generate_vt_trend_signal("LOWVOL", bars_from_prices(low_vol))
+        self.assertEqual(sig_low.action, "BUY")
+        self.assertAlmostEqual(sig_low.target_weight, 1.0, delta=0.01)
+
+        # High vol ~60% annualized (daily std ~0.0378)
+        high_rets = [0.001 + 0.0378 * (1 if i % 2 == 0 else -1) for i in range(179)]
+        high_vol = _prices_from_rets(high_rets)
+        sig_high = generate_vt_trend_signal("HIGHVOL", bars_from_prices(high_vol))
+        self.assertEqual(sig_high.action, "BUY")
+        self.assertAlmostEqual(sig_high.target_weight, 0.25, delta=0.05)
+        self.assertLess(sig_high.target_weight, sig_low.target_weight)
+
+    def test_vt_trend_floor_at_point_one_zero(self):
+        prices = [100] * 20 + [100 + (25 if i % 2 == 0 else -25) for i in range(160)]
+        sig = generate_vt_trend_signal("FLOOR", bars_from_prices(prices))
+        self.assertEqual(sig.action, "SELL")
+        self.assertEqual(sig.target_weight, 0.0)
+        self.assertIn("exposure floor", sig.reason.lower())
+
+    def test_vt_trend_drawdown_level_one_triggers(self):
+        prices = [100 + i * 0.5 for i in range(100)] + [150 - i * 0.8 for i in range(30)]
+        bars = bars_from_prices(prices)
+        sig = generate_vt_trend_signal("DD1", bars)
+        self.assertEqual(sig.evidence["drawdown_level"], 1)
+        full_target = sig.evidence.get("full_target_weight")
+        self.assertIsInstance(full_target, float)
+        self.assertLess(sig.target_weight, float(full_target))
+
+    def test_vt_trend_drawdown_level_two_triggers(self):
+        prices = [100 + i * 0.5 for i in range(100)] + [150 - i * 1.2 for i in range(30)]
+        bars = bars_from_prices(prices)
+        sig = generate_vt_trend_signal("DD2", bars)
+        self.assertEqual(sig.evidence["drawdown_level"], 2)
+        self.assertEqual(sig.target_weight, 0.0)
+
+    def test_vt_trend_reentry_after_level_two(self):
+        # uptrend -> crash to level 2 -> partial recovery -> full recovery
+        prices = (
+            [100 + i * 0.5 for i in range(100)]       # uptrend to 150 (indices 0..99)
+            + [150 - i * 1.5 for i in range(21)]      # crash to 120 (indices 100..120)
+            + [120 + i * 0.3 for i in range(30)]      # recover to 129 (indices 121..150)
+            + [129 + i * 0.5 for i in range(80)]      # recover to 169 (indices 151..230)
+        )
+        bars = bars_from_prices(prices)
+        sig_crash = generate_vt_trend_signal("REENTRY", bars[:122])
+        self.assertEqual(sig_crash.evidence["drawdown_level"], 2)
+        sig_partial = generate_vt_trend_signal("REENTRY", bars[:152])
+        self.assertFalse(sig_partial.evidence["reentry_ok"])
+        sig_full = generate_vt_trend_signal("REENTRY", bars)
+        self.assertTrue(sig_full.evidence["reentry_ok"])
+        self.assertEqual(sig_full.action, "BUY")
+
+    def test_vt_trend_trend_break_exits(self):
+        prices = [100 + i * 0.5 for i in range(150)] + [175 - i * 0.8 for i in range(30)]
+        bars = bars_from_prices(prices)
+        sig = generate_vt_trend_signal("TB", bars)
+        self.assertEqual(sig.action, "SELL")
+        self.assertIn("trend break", sig.reason.lower())
+
+    def test_vt_trend_no_lookahead_in_vol(self):
+        from market_lab.indicators import returns
+        prices = [100 + i * 0.3 for i in range(180)]
+        bars = bars_from_prices(prices)
+        sig = generate_vt_trend_signal("NL", bars[:150])
+        closes = [b.close for b in bars[:150]]
+        rets = [r for r in returns(closes) if r is not None]
+        last_20 = rets[-20:]
+        mean_ret = sum(last_20) / len(last_20)
+        pop_std = (sum((r - mean_ret) ** 2 for r in last_20) / len(last_20)) ** 0.5
+        expected_vol20 = pop_std * (252 ** 0.5)
+        self.assertAlmostEqual(sig.evidence["vol20"], expected_vol20, places=6)
+
+    def test_vt_trend_backtest_respects_drawdown_level_two_and_reentry(self):
+        prices = (
+            [100 + i * 0.5 for i in range(100)]
+            + [150 - i * 1.5 for i in range(20)]
+            + [120 + i * 0.3 for i in range(30)]
+            + [129 + i * 0.5 for i in range(60)]
+        )
+        bars = bars_from_prices(prices)
+        result = run_signal_backtest_with_sizing("REENTRY", bars, generate_vt_trend_signal, min_history=120)
+        self.assertGreater(result.trades, 0)
+        self.assertGreater(result.final_equity, 0)
+
+    def test_sizing_backtest_uses_sell_fill_when_reducing_positive_target_weight(self):
+        prices = [100.0] * 125
+        bars = bars_from_prices(prices)
+        sides = []
+
+        class RecordingExecution:
+            commission_per_trade = 0.0
+            def fill_price(self, side, open_price):
+                sides.append(side)
+                return open_price
+
+        def rebalance_signal(symbol, history):
+            if len(history) <= 121:
+                return Signal(symbol, "BUY", 1.0, "enter", history[-1].close, None, None, None, None, "rebalance", 1.0)
+            return Signal(symbol, "BUY", 1.0, "halve", history[-1].close, None, None, None, None, "rebalance", 0.5)
+
+        result = run_signal_backtest_with_sizing("REB", bars, rebalance_signal, min_history=120, execution=RecordingExecution())
+
+        self.assertGreaterEqual(result.trades, 2)
+        self.assertEqual(sides[:2], ["BUY", "SELL"])
+
+    def test_level_one_drawdown_holds_signal_target_instead_of_repeated_halving(self):
+        prices = [100.0] * 122 + [110.0] + [120.0] * 7
+        bars = bars_from_prices(prices)
+        sides = []
+
+        class RecordingExecution:
+            commission_per_trade = 0.0
+            def fill_price(self, side, open_price):
+                sides.append(side)
+                return open_price
+
+        def level_one_signal(symbol, history):
+            if len(history) <= 121:
+                return Signal(symbol, "BUY", 1.0, "enter", history[-1].close, None, None, None, None, "level_one", 1.0, {"drawdown_level": 0})
+            return Signal(symbol, "SELL", 1.0, "level one", history[-1].close, None, None, None, None, "level_one", 0.5, {"drawdown_level": 1})
+
+        result = run_signal_backtest_with_sizing("L1", bars, level_one_signal, min_history=120, execution=RecordingExecution())
+
+        self.assertLessEqual(result.trades, 3)
+        self.assertEqual(sides[:2], ["BUY", "SELL"])
+        self.assertGreater(result.final_equity, 11_000.0)
+    def test_sizing_backtest_executes_final_pending_trade_at_last_open(self):
+        bars = bars_from_prices([100.0] * 124)
+        bars.append(Bar(date(2026, 5, 4), 100.0, 100.0, 50.0, 50.0, 1_000_000))
+
+        def exit_penultimate_signal(symbol, history):
+            if len(history) < 124:
+                return Signal(symbol, "BUY", 1.0, "enter", history[-1].close, None, None, None, None, "final_exit", 1.0, {})
+            return Signal(symbol, "SELL", 1.0, "exit", history[-1].close, None, None, None, None, "final_exit", 0.0, {})
+
+        result = run_signal_backtest_with_sizing("LAST", bars, exit_penultimate_signal, min_history=120, execution=ExecutionModel(slippage_bps=0.0, commission_per_trade=0.0))
+
+        self.assertEqual(result.trades, 2)
+        self.assertAlmostEqual(result.final_equity, 10_000.0)
 
 
 if __name__ == "__main__":

@@ -37,6 +37,22 @@ def _existing_ids(path: Path) -> set[str]:
     return {str(record.get("decision_id")) for record in load_evidence_records(path) if record.get("decision_id")}
 
 
+def _latest_trade_records_by_decision(path: Path) -> dict[str, dict]:
+    latest: dict[str, dict] = {}
+    for record in load_evidence_records(path):
+        record_id = record.get("decision_id")
+        if not record_id:
+            continue
+        current = latest.get(str(record_id))
+        if current is None or int(record.get("holding_bars", 0)) >= int(current.get("holding_bars", 0)):
+            latest[str(record_id)] = record
+    return latest
+
+
+def _canonical_record(record: dict) -> str:
+    return json.dumps(record, sort_keys=True, separators=(",", ":"))
+
+
 def _decision_date(decision: OrderDecision) -> date:
     if decision.execution_date:
         return date.fromisoformat(decision.execution_date)
@@ -96,6 +112,7 @@ def diagnose_new_mock_decisions(days: int = 45, prefer_network: bool = False) ->
     ensure_dirs()
     trades_path = evidence_stream_path("trades", EVIDENCE_DIR)
     decisions = _load_accepted_decisions()
+    latest_existing = _latest_trade_records_by_decision(trades_path)
     open_buy_ids = _open_buy_decision_ids(decisions)
     diagnoses: list[TradeDiagnosis] = []
     for decision in decisions:
@@ -123,6 +140,13 @@ def diagnose_new_mock_decisions(days: int = 45, prefer_network: bool = False) ->
             benchmark_return=0.0,
             data_quality="synthetic" if "synthetic" in source.lower() else "live_or_cache",
         )
+        existing = latest_existing.get(diagnosis.decision_id)
+        if existing is not None:
+            existing_holding_bars = int(existing.get("holding_bars", 0))
+            if diagnosis.holding_bars < existing_holding_bars:
+                continue
+            if diagnosis.holding_bars == existing_holding_bars and _canonical_record(diagnosis.as_record()) == _canonical_record(existing):
+                continue
         diagnoses.append(diagnosis)
     if diagnoses:
         append_atomic_jsonl_batch([d.as_record() for d in diagnoses], trades_path)
@@ -131,11 +155,21 @@ def diagnose_new_mock_decisions(days: int = 45, prefer_network: bool = False) ->
 
 def write_health_reports() -> list[dict]:
     trades = _latest_trade_diagnoses()
+    health_path = evidence_stream_path("strategy_health", EVIDENCE_DIR)
+    existing_by_strategy: dict[str, dict] = {}
+    for record in load_evidence_records(health_path):
+        strategy = record.get("strategy")
+        if strategy:
+            existing_by_strategy[str(strategy)] = record
     reports = []
     for strategy in sorted({trade.strategy for trade in trades}):
-        reports.append(generate_strategy_health_report(strategy, trades).as_record())
+        report = generate_strategy_health_report(strategy, trades).as_record()
+        existing = existing_by_strategy.get(strategy)
+        if existing is not None and _canonical_record(existing) == _canonical_record(report):
+            continue
+        reports.append(report)
     if reports:
-        append_atomic_jsonl_batch(reports, evidence_stream_path("strategy_health", EVIDENCE_DIR))
+        append_atomic_jsonl_batch(reports, health_path)
     return reports
 
 

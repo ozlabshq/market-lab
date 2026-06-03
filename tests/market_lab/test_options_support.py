@@ -141,6 +141,46 @@ class OptionsSupportTests(unittest.TestCase):
         self.assertEqual(spy.side, "LONG")
         self.assertEqual(qqq.side, "SHORT")
 
+    def test_build_option_positions_view_parses_c_ticker_put_from_suffix(self):
+        paper = OptionPaperPortfolio(
+            positions={"C-2026-07-15-P-50.00": -1},
+            avg_price={"C-2026-07-15-P-50.00": 1.25},
+        )
+
+        view = build_option_positions_view(paper)[0]
+
+        self.assertEqual(view.underlying, "C")
+        self.assertEqual(view.option_type, "PUT")
+        self.assertEqual(view.strike, 50.0)
+
+    def test_build_option_positions_view_parses_hyphenated_ticker_from_right(self):
+        paper = OptionPaperPortfolio(
+            positions={"BRK-B-2026-07-15-C-400.00": 1},
+            avg_price={"BRK-B-2026-07-15-C-400.00": 3.5},
+        )
+
+        view = build_option_positions_view(paper)[0]
+
+        self.assertEqual(view.underlying, "BRK-B")
+        self.assertEqual(view.expiration, "2026-07-15")
+        self.assertEqual(view.option_type, "CALL")
+        self.assertEqual(view.strike, 400.0)
+
+    def test_build_option_positions_view_falls_back_on_malformed_cached_chain(self):
+        paper = OptionPaperPortfolio(
+            positions={"SPY-2026-07-15-C-105.00": 1},
+            avg_price={"SPY-2026-07-15-C-105.00": 2.0},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            chain_dir = Path(td)
+            chain_dir.mkdir(parents=True, exist_ok=True)
+            (chain_dir / "SPY.json").write_text("not json")
+
+            view = build_option_positions_view(paper, chain_dir)[0]
+
+        self.assertEqual(view.mark, 2.0)
+        self.assertEqual(view.unrealized_pnl, 0.0)
+
     def test_report_and_dashboard_surface_options_research_read_only(self):
         snapshot = sample_snapshot()
         risk = OptionsRiskConfig(paper_options_enabled=True)

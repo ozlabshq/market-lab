@@ -161,8 +161,26 @@ class DegenerateGreeksRegressionTests(unittest.TestCase):
         self.assertFalse(loaded.contracts[0].greeks.degenerate)
         self.assertTrue(loaded.contracts[1].greeks.degenerate)
 
-    def test_load_old_snapshot_without_degenerates_defaults_to_false(self):
-        """Backward compat: JSON saved before the field exists loads as degenerate=False."""
+    def test_chain_snapshot_round_trip_uses_sanitized_path_for_hyphenated_symbols(self):
+        expiry = (date.today() + timedelta(days=35)).isoformat()
+        contract = OptionContract("BRK-B", expiry, 400.0, "CALL", OptionQuote(3.0, 4.0, 3.5, 100, 500), OptionGreeks(0.35, 0.04, -0.03, 0.12, 0.28, degenerate=False))
+        snapshot = OptionChainSnapshot(
+            underlying="BRK-B",
+            underlying_price=390.0,
+            as_of=date.today().isoformat(),
+            source="fixture",
+            contracts=[contract],
+        )
+        with tempfile.TemporaryDirectory() as td:
+            path = save_option_chain_snapshot(snapshot, Path(td))
+            loaded = load_option_chain_snapshot("BRK-B", Path(td))
+
+        self.assertEqual(path.name, "BRK_B.json")
+        self.assertEqual(loaded.underlying, "BRK-B")
+        self.assertEqual(loaded.contracts[0].underlying, "BRK-B")
+
+    def test_load_old_snapshot_without_degenerates_infers_quality_from_legacy_fields(self):
+        """Backward compat: old JSON with usable IV and unexpired contract remains trusted."""
         old_json = {
             "underlying": "SPY",
             "underlying_price": 100.0,
@@ -186,6 +204,30 @@ class DegenerateGreeksRegressionTests(unittest.TestCase):
 
         self.assertEqual(len(loaded.contracts), 1)
         self.assertFalse(loaded.contracts[0].greeks.degenerate)
+
+    def test_load_old_snapshot_without_degenerates_marks_invalid_legacy_iv_untrusted(self):
+        old_json = {
+            "underlying": "SPY",
+            "underlying_price": 100.0,
+            "as_of": date.today().isoformat(),
+            "source": "fixture",
+            "contracts": [
+                {
+                    "underlying": "SPY",
+                    "expiration": (date.today() + timedelta(days=35)).isoformat(),
+                    "strike": 105.0,
+                    "option_type": "CALL",
+                    "quote": {"bid": 1.9, "ask": 2.1, "mid": 2.0, "volume": 150, "open_interest": 1200},
+                    "greeks": {"delta": 0.35, "gamma": 0.04, "theta": -0.03, "vega": 0.12, "implied_volatility": 0.0},
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "SPY.json"
+            path.write_text(json.dumps(old_json))
+            loaded = load_option_chain_snapshot("SPY", Path(td))
+
+        self.assertTrue(loaded.contracts[0].greeks.degenerate)
 
 
 if __name__ == "__main__":

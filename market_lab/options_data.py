@@ -179,20 +179,38 @@ def save_option_chain_snapshot(snapshot: OptionChainSnapshot, chain_dir: Path = 
     return path
 
 
+def _legacy_degenerate_from_record(c: dict, as_of: str) -> bool:
+    greeks = c.get("greeks", {})
+    iv = float(greeks.get("implied_volatility", 0.0) or 0.0)
+    try:
+        expiry = date.fromisoformat(str(c.get("expiration", ""))[:10])
+        as_of_date = date.fromisoformat(str(as_of)[:10])
+        dte = (expiry - as_of_date).days
+    except ValueError:
+        dte = 0
+    delta = float(greeks.get("delta", 0.0) or 0.0)
+    return iv <= 0 or dte <= 0 or abs(delta) <= 0
+
+
+def _contract_from_record(c: dict, as_of: str) -> OptionContract:
+    greeks_data = dict(c["greeks"])
+    if "degenerate" not in greeks_data:
+        greeks_data["degenerate"] = _legacy_degenerate_from_record(c, as_of)
+    return OptionContract(
+        underlying=c["underlying"],
+        expiration=c["expiration"],
+        strike=float(c["strike"]),
+        option_type=c["option_type"],
+        quote=OptionQuote(**c["quote"]),
+        greeks=OptionGreeks(**greeks_data),
+    )
+
+
 def load_option_chain_snapshot(symbol: str, chain_dir: Path = OPTIONS_CHAIN_DIR) -> OptionChainSnapshot:
     path = _snapshot_path(symbol, chain_dir)
     data = json.loads(path.read_text())
-    contracts = [
-        OptionContract(
-            underlying=c["underlying"],
-            expiration=c["expiration"],
-            strike=float(c["strike"]),
-            option_type=c["option_type"],
-            quote=OptionQuote(**c["quote"]),
-            greeks=OptionGreeks(**c["greeks"]),
-        )
-        for c in data.get("contracts", [])
-    ]
+    contracts = [_contract_from_record(c, data.get("as_of", "")) for c in data.get("contracts", [])]
+
     return OptionChainSnapshot(
         underlying=data["underlying"],
         underlying_price=float(data["underlying_price"]),

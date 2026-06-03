@@ -239,13 +239,20 @@ def append_option_paper_ledger(decision: OptionPaperDecision, path: Path = OPTIO
 
 
 def _parse_contract_id(contract_id: str) -> dict[str, str | float]:
-    """Parse a canonical contract_id into descriptive pieces: underlying, expiration, type, strike."""
+    """Parse canonical contract_id from the right so hyphenated underlyings survive."""
     parts = contract_id.split("-")
-    underlying = parts[0] if parts else ""
-    option_type = "CALL" if "C" in parts else "PUT"
-    strike = float(parts[-1]) if parts else 0.0
-    expiration_parts = parts[1:-2]
-    expiration = "-".join(expiration_parts) if expiration_parts else ""
+    if len(parts) < 6:
+        underlying = parts[0] if parts else ""
+        option_marker = parts[-2] if len(parts) >= 2 else ""
+        option_type = "CALL" if option_marker == "C" else "PUT"
+        strike = float(parts[-1]) if parts else 0.0
+        expiration = "-".join(parts[1:-2]) if len(parts) > 3 else ""
+        return {"underlying": underlying, "expiration": expiration, "option_type": option_type, "strike": strike}
+    strike = float(parts[-1])
+    option_marker = parts[-2]
+    option_type = "CALL" if option_marker == "C" else "PUT"
+    expiration = "-".join(parts[-5:-2])
+    underlying = "-".join(parts[:-5])
     return {"underlying": underlying, "expiration": expiration, "option_type": option_type, "strike": strike}
 
 
@@ -285,7 +292,7 @@ def build_option_positions_view(
                 chain = load_option_chain_snapshot(underlying, chain_dir)
                 for contract in chain.contracts:
                     quotes[contract.contract_id] = contract.quote.mid
-            except (OSError, FileNotFoundError):
+            except (OSError, FileNotFoundError, json.JSONDecodeError, TypeError, ValueError, KeyError):
                 pass
         avg = paper.avg_price.get(cid, 0.0)
         mark = quotes.get(cid, avg)
