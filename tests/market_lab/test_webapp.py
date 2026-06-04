@@ -91,6 +91,69 @@ class ReadOnlyWebappTests(unittest.TestCase):
 
     def test_script_imports_webapp_main(self):
         self.assertTrue(callable(market_lab_webapp.main))
+
+    def test_dashboard_snapshot_includes_tsmom_when_state_exists(self):
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            tsmom_state = data_dir / "tsmom" / "portfolio_state.json"
+            tsmom_ledger = data_dir / "tsmom" / "ledger.jsonl"
+            with patch("market_lab.data.PRICE_DIR", data_dir / "prices"), patch("market_lab.data.SYNTHETIC_PRICE_DIR", data_dir / "synthetic"), patch("market_lab.webapp.EVIDENCE_DIR", data_dir / "evidence"), patch("market_lab.webapp.LEDGER_PATH", data_dir / "ledger.jsonl"), patch("market_lab.webapp.PENDING_CANDIDATES_PATH", data_dir / "candidates.jsonl"), patch("market_lab.webapp.STATE_PATH", data_dir / "portfolio.json"), patch("market_lab.webapp.REPORT_DIR", data_dir / "reports"), patch("market_lab.webapp.TSMOM_STATE", tsmom_state), patch("market_lab.webapp.TSMOM_LEDGER", tsmom_ledger):
+                save_prices("SPY", bars(100))
+                from market_lab.broker import Portfolio, save_portfolio
+                save_portfolio(Portfolio(cash=25000.0), tsmom_state)
+                snapshot = build_dashboard_snapshot(["SPY"])
+
+        self.assertIn("tsmom", snapshot)
+        self.assertTrue(snapshot["tsmom"]["active"])
+        self.assertIn("portfolio", snapshot["tsmom"])
+        self.assertIn("signal", snapshot["tsmom"])
+        self.assertEqual(snapshot["tsmom"]["symbol"], "SPY")
+
+    def test_dashboard_snapshot_tsmom_inactive_when_state_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            missing_state = data_dir / "tsmom" / "portfolio_state.json"
+            missing_ledger = data_dir / "tsmom" / "ledger.jsonl"
+            with patch("market_lab.data.PRICE_DIR", data_dir / "prices"), patch("market_lab.data.SYNTHETIC_PRICE_DIR", data_dir / "synthetic"), patch("market_lab.webapp.EVIDENCE_DIR", data_dir / "evidence"), patch("market_lab.webapp.LEDGER_PATH", data_dir / "ledger.jsonl"), patch("market_lab.webapp.PENDING_CANDIDATES_PATH", data_dir / "candidates.jsonl"), patch("market_lab.webapp.STATE_PATH", data_dir / "portfolio.json"), patch("market_lab.webapp.REPORT_DIR", data_dir / "reports"), patch("market_lab.webapp.TSMOM_STATE", missing_state), patch("market_lab.webapp.TSMOM_LEDGER", missing_ledger):
+                snapshot = build_dashboard_snapshot(["SPY"])
+
+        self.assertIn("tsmom", snapshot)
+        self.assertFalse(snapshot["tsmom"]["active"])
+        self.assertIn("message", snapshot["tsmom"])
+
+    def test_rendered_html_includes_tsmom_panel(self):
+        snapshot = {
+            "generated_at": "2026-01-01T00:00:00Z",
+            "portfolio": {"equity": 101000.0, "cash": 99000.0, "open_positions": 1, "positions": []},
+            "signals": {"buy": 1, "hold": 1, "sell": 0, "cards": [{"symbol": "SPY", "action": "BUY", "confidence": 0.75, "close": 500.0, "change_1m": 0.03, "reason": "trend", "sparkline": "0,50 180,1", "source": "cache"}]},
+            "backtests": [{"symbol": "SPY", "strategy": "tsmom", "total_return": 0.1, "benchmark_return": 0.08, "max_drawdown": -0.05, "sharpe": 1.2, "trades": 4}],
+            "momentum": [{"rank": 1, "symbol": "SPY", "percentile": 1.0, "score": 0.2}],
+            "mock_trading": {"queued_candidates": [], "accepted_orders": 1, "rejected_orders": 0},
+            "council": {"health": [], "trade_diagnoses": []},
+            "data_sources": {"SPY": "cache"},
+            "report_excerpt": "# latest",
+            "options": {"covered_calls": [], "cash_secured_puts": [], "warnings": [], "mode": "DISABLED", "chain_count": 0, "paper_portfolio": {"cash": 0, "available_cash": 0, "reserved_cash": 0, "reserved_shares": {}, "open_positions": 0, "positions": []}},
+            "tsmom": {
+                "active": True,
+                "symbol": "SPY",
+                "mode": "READ_ONLY_VIEW",
+                "source": "cache",
+                "portfolio": {"cash": 25000.0, "equity": 25000.0, "position_qty": 0, "position_avg_price": 0.0, "position_weight": 0.0},
+                "signal": {"action": "HOLD", "confidence": 0.5, "target_weight": 0.0, "reason": "flat", "evidence": {}},
+                "cumulative_fills": 0,
+            },
+        }
+        html = render_dashboard_html(snapshot)
+        self.assertIn("TSMOM Independent Mock Tracking", html)
+        self.assertIn("Active", html)
+
+        # Also verify inactive rendering when tsmom.active is False
+        inactive_snapshot = dict(snapshot)
+        inactive_snapshot["tsmom"] = {"active": False, "message": "tsmom tracking not started yet"}
+        inactive_html = render_dashboard_html(inactive_snapshot)
+        self.assertIn("TSMOM Independent Mock Tracking", inactive_html)
+        self.assertIn("Inactive", inactive_html)
+
     def test_snapshot_tolerates_malformed_trade_evidence_jsonl(self):
         with tempfile.TemporaryDirectory() as td:
             data_dir = Path(td)

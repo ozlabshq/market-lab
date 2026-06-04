@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from .backtest import moving_average_cross_backtest
 from .broker import load_order_candidates, load_portfolio
-from .config import DEFAULT_UNIVERSE, EVIDENCE_DIR, LEDGER_PATH, OPTIONS_CHAIN_DIR, OPTIONS_RISK, PENDING_CANDIDATES_PATH, REPORT_DIR, RISK, STATE_PATH, TSMOM_LEDGER, TSMOM_STATE, VT_TREND_LEDGER, VT_TREND_STATE
+from .config import DEFAULT_UNIVERSE, EVIDENCE_DIR, LEDGER_PATH, OPTIONS_CHAIN_DIR, OPTIONS_RISK, PENDING_CANDIDATES_PATH, REPORT_DIR, RISK, STATE_PATH, TSMOM_LEDGER, TSMOM_REPORT_DIR, TSMOM_STATE, VT_TREND_LEDGER, VT_TREND_STATE
 from .data import Bar, load_cached_prices, load_cached_synthetic_prices
 from .diagnosis import TradeDiagnosis, generate_strategy_health_report
 from .options_data import load_available_option_chains
@@ -236,6 +236,7 @@ def build_dashboard_snapshot(symbols: list[str] | None = None) -> dict:
         "options": options_payload,
         "data_sources": sources,
         "report_excerpt": _latest_report_excerpt(),
+        "tsmom": build_tsmom_snapshot(),
     }
 
 
@@ -325,6 +326,25 @@ def render_dashboard_html(snapshot: dict) -> str:
     report_excerpt = esc(snapshot.get("report_excerpt", ""))
     generated = esc(snapshot["generated_at"])
     equity = snapshot["portfolio"]["equity"]
+
+    tsmom = snapshot.get("tsmom", {})
+    tsmom_active = tsmom.get("active", False)
+    tsmom_msg = esc(tsmom.get("message", ""))
+    tsmom_portfolio = tsmom.get("portfolio", {})
+    tsmom_sig = tsmom.get("signal", {}) or {}
+    tsmom_symbol = esc(tsmom.get("symbol", "SPY"))
+    if tsmom_active:
+        tsmom_rows = (
+            f"<li><b>Status</b><span>Active &#183; {esc(tsmom.get('mode',''))} &#183; source {esc(tsmom.get('source',''))}</span></li>"
+            f"<li><b>Equity</b><span>{_money(tsmom_portfolio.get('equity'))}</span></li>"
+            f"<li><b>Cash</b><span>{_money(tsmom_portfolio.get('cash'))}</span></li>"
+            f"<li><b>Position</b><span>{tsmom_portfolio.get('position_qty',0)} shares {tsmom_symbol} @ {_money(tsmom_portfolio.get('position_avg_price',0))}</span></li>"
+            f"<li><b>Weight</b><span>{_pct(tsmom_portfolio.get('position_weight',0))}</span></li>"
+            f"<li><b>Signal</b><span>{esc(tsmom_sig.get('action','&#8212;'))} &#183; confidence {tsmom_sig.get('confidence',0):.2f} &#183; target {_pct(tsmom_sig.get('target_weight',0))}</span></li>"
+            f"<li><b>Fills</b><span>{tsmom.get('cumulative_fills',0)}</span></li>"
+        )
+    else:
+        tsmom_rows = f"<li><b>Inactive</b><span>{tsmom_msg}</span></li>"
     cash = snapshot["portfolio"]["cash"]
     open_positions = snapshot["portfolio"]["open_positions"]
     buy = snapshot["signals"]["buy"]
@@ -406,8 +426,9 @@ def render_dashboard_html(snapshot: dict) -> str:
     </main>
 
     <section class=\"panel\" style=\"margin-top:16px\"><h2>Options Research — PAPER ONLY</h2><div class=\"grid health-grid\"><div><h3>Covered calls</h3><ul class=\"feed\">{option_call_rows}</ul></div><div><h3>Cash-secured puts</h3><ul class=\"feed\">{option_put_rows}</ul></div></div><h3>Active Paper Positions ({len(paper_portfolio.get('positions', []))} open)</h3><ul class=\"feed\">{paper_pos_rows}</ul><h3>Collateral Reserves</h3><ul class=\"feed\">{paper_reserve_rows}</ul><h3>Options guardrails</h3><ul class=\"feed\">{option_warning_rows}</ul></section>
-    <section class=\"panel\" style=\"margin-top:16px\"><h2>Backtest sanity checks</h2><table><thead><tr><th>Symbol</th><th>Strategy</th><th>Return</th><th>Benchmark</th><th>Max DD</th><th>Sharpe</th><th>Trades</th></tr></thead><tbody>{backtest_rows}</tbody></table></section>
-    <section class=\"grid main\" style=\"margin-top:16px\"><div class=\"panel\"><h2>Trade diagnoses</h2><ul class=\"feed\">{diagnosis_rows}</ul></div><div class=\"panel\"><h2>Latest report excerpt</h2><pre>{report_excerpt}</pre></div></section>
+    <section class="panel" style="margin-top:16px"><h2>Backtest sanity checks</h2><table><thead><tr><th>Symbol</th><th>Strategy</th><th>Return</th><th>Benchmark</th><th>Max DD</th><th>Sharpe</th><th>Trades</th></tr></thead><tbody>{backtest_rows}</tbody></table></section>
+    <section class="panel" style="margin-top:16px"><h2>TSMOM Independent Mock Tracking</h2><p class="muted">Research tracking — not wired into ensemble. No live orders.</p><ul class="feed">{tsmom_rows}</ul></section>
+    <section class="grid main" style="margin-top:16px"><div class="panel"><h2>Trade diagnoses</h2><ul class="feed">{diagnosis_rows}</ul></div><div class="panel"><h2>Latest report excerpt</h2><pre>{report_excerpt}</pre></div></section>
     <div class=\"footer\">Generated {generated} · API: /api/snapshot · Source: local Market Lab artifacts only</div>
   </div>
 </body>
