@@ -110,7 +110,7 @@ def _open_buy_decision_ids(decisions: list[OrderDecision]) -> set[str]:
     return {lot_id for lots in lots_by_symbol.values() for lot_id, qty in lots if qty > 0}
 
 
-def diagnose_new_mock_decisions(days: int = 45, prefer_network: bool = False, ledger_path: Path = LEDGER_PATH, trades_stream_name: str = "trades") -> list[TradeDiagnosis]:
+def diagnose_new_mock_decisions(days: int = 120, prefer_network: bool = False, ledger_path: Path = LEDGER_PATH, trades_stream_name: str = "trades") -> list[TradeDiagnosis]:
     ensure_dirs()
     trades_path = evidence_stream_path(trades_stream_name, EVIDENCE_DIR)
     decisions = _load_accepted_decisions(ledger_path)
@@ -173,7 +173,7 @@ def write_health_reports(trades_stream_name: str = "trades", health_stream_name:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Review Market Lab mock trades and append council evidence artifacts")
-    parser.add_argument("--days", type=int, default=45)
+    parser.add_argument("--days", type=int, default=120)
     parser.add_argument("--network", action="store_true")
     parser.add_argument("--ledger-path", type=Path, default=LEDGER_PATH, help="Path to ledger JSONL to diagnose (default: main mock ledger)")
     parser.add_argument("--trades-stream", type=str, default="trades", help="Evidence stream name for trade diagnoses")

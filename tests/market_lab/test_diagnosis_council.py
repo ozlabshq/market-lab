@@ -336,6 +336,39 @@ class DiagnosisCouncilTests(unittest.TestCase):
 
             self.assertEqual(diagnoses, [])
 
+    def test_regime_label_populates_with_120_day_window(self):
+        with tempfile.TemporaryDirectory() as td:
+            evidence_dir = Path(td) / "evidence"
+            buy = OrderDecision(True, "BUY", "SPY", 10, 100.0, 100.0, "accepted", "2025-10-05T15:00:00Z", execution_date="2025-10-05")
+            fetched = bars_from_closes([100 + i for i in range(120)], start=date(2025, 10, 1))
+
+            with (
+                patch.object(market_lab_review, "EVIDENCE_DIR", evidence_dir),
+                patch.object(market_lab_review, "_load_accepted_decisions", return_value=[buy]),
+                patch.object(market_lab_review, "fetch_prices", return_value=(fetched, "cache")),
+            ):
+                diagnoses = market_lab_review.diagnose_new_mock_decisions(days=120)
+
+            self.assertEqual(len(diagnoses), 1)
+            self.assertNotEqual(diagnoses[0].regime_label, "unknown")
+            self.assertEqual(diagnoses[0].regime_label, "trending_up")
+
+    def test_regime_label_is_unknown_with_short_post_entry_bars(self):
+        with tempfile.TemporaryDirectory() as td:
+            evidence_dir = Path(td) / "evidence"
+            buy = OrderDecision(True, "BUY", "SPY", 10, 100.0, 100.0, "accepted", "2026-01-03T15:00:00Z", execution_date="2026-01-03")
+            fetched = bars_from_closes([100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0, 109.0, 110.0], start=date(2026, 1, 1))
+
+            with (
+                patch.object(market_lab_review, "EVIDENCE_DIR", evidence_dir),
+                patch.object(market_lab_review, "_load_accepted_decisions", return_value=[buy]),
+                patch.object(market_lab_review, "fetch_prices", return_value=(fetched, "cache")),
+            ):
+                diagnoses = market_lab_review.diagnose_new_mock_decisions(days=11)
+
+            self.assertEqual(len(diagnoses), 1)
+            self.assertEqual(diagnoses[0].regime_label, "unknown")
+
 
 if __name__ == "__main__":
     unittest.main()
