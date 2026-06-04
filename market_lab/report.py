@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .backtest import BacktestResult
 from .broker import OrderCandidate, OrderDecision, Portfolio
-from .config import OPTIONS_CHAIN_DIR, REPORT_DIR, VT_TREND_LEDGER, VT_TREND_STATE, ensure_dirs
+from .config import OPTIONS_CHAIN_DIR, REPORT_DIR, TSMOM_LEDGER, TSMOM_STATE, VT_TREND_LEDGER, VT_TREND_STATE, ensure_dirs
 from .factors import FactorSnapshot
 from .options_paper import OptionPaperPortfolio, build_option_positions_view, load_option_paper_portfolio
 from .options_screeners import CashSecuredPutCandidate, CoveredCallCandidate
@@ -37,6 +37,45 @@ def _vt_trend_section() -> list[str]:
     lines = [
         "",
         "## vt_trend Independent Mock Tracking",
+        "",
+        "**Status:** Research tracking — not wired into ensemble. Evidence collected daily.",
+        "",
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| Cash | ${portfolio.cash:,.2f} |",
+        f"| Position | {pos_qty} shares SPY @ ${pos_avg:.2f} avg |",
+        f"| Equity | ${equity:,.2f} |",
+        f"| Position weight | {weight*100:.1f}% |",
+        f"| Cumulative fills | {fills} |",
+    ]
+    return lines
+
+
+def _tsmom_section() -> list[str]:
+    if not TSMOM_STATE.exists():
+        return []
+    import json
+    from .broker import load_portfolio
+    portfolio = load_portfolio(TSMOM_STATE)
+    # Load latest price from SPY cache if available
+    from .data import load_cached_prices, load_cached_synthetic_prices
+    bars = load_cached_prices("SPY") or load_cached_synthetic_prices("SPY")
+    price = bars[-1].close if bars else 0.0
+    equity = portfolio.equity({"SPY": price})
+    pos = portfolio.positions.get("SPY")
+    pos_qty = pos.quantity if pos else 0
+    pos_avg = pos.avg_price if pos else 0.0
+    weight = (pos_qty * price) / equity if equity > 0 else 0.0
+    fills = 0
+    if TSMOM_LEDGER.exists():
+        try:
+            with TSMOM_LEDGER.open() as f:
+                fills = sum(1 for line in f if line.strip() and json.loads(line).get("accepted"))
+        except Exception:
+            pass
+    lines = [
+        "",
+        "## TSMOM Independent Mock Tracking",
         "",
         "**Status:** Research tracking — not wired into ensemble. Evidence collected daily.",
         "",
@@ -197,6 +236,7 @@ def render_report(
     for sym, src in sorted(data_sources.items()):
         lines.append(f"- {sym}: {src}")
     lines += _vt_trend_section()
+    lines += _tsmom_section()
     lines += [
         "",
         "## Research basis",

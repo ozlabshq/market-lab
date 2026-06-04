@@ -14,6 +14,8 @@ Current posture: **research-only**.
 
 - `market_lab/` — Python package for data, indicators, signals, backtests, factors, reporting, and mock broker logic
 - `scripts/market_lab_daily.py` — daily report runner
+- `scripts/market_lab_vt_trend.py` — vt_trend isolated mock tracking
+- `scripts/market_lab_tsmom.py` — TSMOM isolated mock tracking
 - `scripts/market_lab_webapp.py` — read-only local visual dashboard
 - `tests/market_lab/` — regression/safety tests
 - `research/` — implementation plans and reviews
@@ -30,6 +32,13 @@ Generate a local research report:
 
 ```bash
 python3 scripts/market_lab_daily.py
+```
+
+Run isolated mock tracking (research-only, separate state/ledger per strategy):
+
+```bash
+python3 scripts/market_lab_vt_trend.py --network
+python3 scripts/market_lab_tsmom.py --network
 ```
 
 Run the read-only visual webapp:
@@ -53,6 +62,8 @@ Do not commit:
 - `data/market-lab/mock_ledger.jsonl`
 - `data/market-lab/mock_portfolio_state.json`
 - `data/market-lab/pending_order_candidates.jsonl`
+- `data/market-lab/vt_trend/`
+- `data/market-lab/tsmom/`
 - secrets or broker credentials
 
 ## Development workflow
