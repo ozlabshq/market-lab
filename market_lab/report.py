@@ -5,35 +5,44 @@ from pathlib import Path
 
 from .backtest import BacktestResult
 from .broker import OrderCandidate, OrderDecision, Portfolio
-from .config import OPTIONS_CHAIN_DIR, REPORT_DIR, TSMOM_LEDGER, TSMOM_STATE, VT_TREND_LEDGER, VT_TREND_STATE, ensure_dirs
+from .config import OPTIONS_CHAIN_DIR, REPORT_DIR, TSMOM_LEDGER, TSMOM_REPORT_DIR, TSMOM_STATE, VT_TREND_LEDGER, VT_TREND_REPORT_DIR, VT_TREND_STATE, ensure_dirs
 from .factors import FactorSnapshot
 from .options_paper import OptionPaperPortfolio, build_option_positions_view, load_option_paper_portfolio
 from .options_screeners import CashSecuredPutCandidate, CoveredCallCandidate
 from .signals import CrossSectionalRank, Signal, rank_signals
 
 
-def _vt_trend_section() -> list[str]:
-    if not VT_TREND_STATE.exists():
+def _parse_report_table(report_text: str) -> dict[str, str]:
+    """Extract key-value pairs from a markdown table in an independent track report."""
+    result: dict[str, str] = {}
+    in_table = False
+    for line in report_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("| Metric | Value |"):
+            in_table = True
+            continue
+        if in_table and stripped.startswith("|") and "---" not in stripped:
+            parts = [p.strip() for p in stripped.split("|")]
+            # parts = ['', 'Metric', 'Value', '']
+            if len(parts) >= 3 and parts[1] and parts[2]:
+                result[parts[1]] = parts[2]
+        if in_table and not stripped.startswith("|"):
+            in_table = False
+    return result
+
+
+def _vt_trend_section_from_report() -> list[str]:
+    """Read the latest vt_trend report and surface its summary in the ensemble report."""
+    latest = VT_TREND_REPORT_DIR / "latest.md"
+    if not latest.exists():
         return []
-    import json
-    from .broker import load_portfolio
-    portfolio = load_portfolio(VT_TREND_STATE)
-    # Load latest price from SPY cache if available
-    from .data import load_cached_prices, load_cached_synthetic_prices
-    bars = load_cached_prices("SPY") or load_cached_synthetic_prices("SPY")
-    price = bars[-1].close if bars else 0.0
-    equity = portfolio.equity({"SPY": price})
-    pos = portfolio.positions.get("SPY")
-    pos_qty = pos.quantity if pos else 0
-    pos_avg = pos.avg_price if pos else 0.0
-    weight = (pos_qty * price) / equity if equity > 0 else 0.0
-    fills = 0
-    if VT_TREND_LEDGER.exists():
-        try:
-            with VT_TREND_LEDGER.open() as f:
-                fills = sum(1 for line in f if line.strip() and json.loads(line).get("accepted"))
-        except Exception:
-            pass
+    try:
+        text = latest.read_text()
+    except Exception:
+        return []
+    metrics = _parse_report_table(text)
+    if not metrics:
+        return []
     lines = [
         "",
         "## vt_trend Independent Mock Tracking",
@@ -42,37 +51,30 @@ def _vt_trend_section() -> list[str]:
         "",
         "| Metric | Value |",
         "|--------|-------|",
-        f"| Cash | ${portfolio.cash:,.2f} |",
-        f"| Position | {pos_qty} shares SPY @ ${pos_avg:.2f} avg |",
-        f"| Equity | ${equity:,.2f} |",
-        f"| Position weight | {weight*100:.1f}% |",
-        f"| Cumulative fills | {fills} |",
     ]
+    for key in (
+        "Cash", "Position", "Equity", "Position weight", "Target weight",
+        "Vol20 (ann.)", "Drawdown from 90d peak", "Drawdown level",
+        "Trend regime", "Re-entry allowed", "Cumulative fills", "Pending candidates",
+        "Data source",
+    ):
+        if key in metrics:
+            lines.append(f"| {key} | {metrics[key]} |")
     return lines
 
 
-def _tsmom_section() -> list[str]:
-    if not TSMOM_STATE.exists():
+def _tsmom_section_from_report() -> list[str]:
+    """Read the latest TSMOM report and surface its summary in the ensemble report."""
+    latest = TSMOM_REPORT_DIR / "latest.md"
+    if not latest.exists():
         return []
-    import json
-    from .broker import load_portfolio
-    portfolio = load_portfolio(TSMOM_STATE)
-    # Load latest price from SPY cache if available
-    from .data import load_cached_prices, load_cached_synthetic_prices
-    bars = load_cached_prices("SPY") or load_cached_synthetic_prices("SPY")
-    price = bars[-1].close if bars else 0.0
-    equity = portfolio.equity({"SPY": price})
-    pos = portfolio.positions.get("SPY")
-    pos_qty = pos.quantity if pos else 0
-    pos_avg = pos.avg_price if pos else 0.0
-    weight = (pos_qty * price) / equity if equity > 0 else 0.0
-    fills = 0
-    if TSMOM_LEDGER.exists():
-        try:
-            with TSMOM_LEDGER.open() as f:
-                fills = sum(1 for line in f if line.strip() and json.loads(line).get("accepted"))
-        except Exception:
-            pass
+    try:
+        text = latest.read_text()
+    except Exception:
+        return []
+    metrics = _parse_report_table(text)
+    if not metrics:
+        return []
     lines = [
         "",
         "## TSMOM Independent Mock Tracking",
@@ -81,12 +83,42 @@ def _tsmom_section() -> list[str]:
         "",
         "| Metric | Value |",
         "|--------|-------|",
-        f"| Cash | ${portfolio.cash:,.2f} |",
-        f"| Position | {pos_qty} shares SPY @ ${pos_avg:.2f} avg |",
-        f"| Equity | ${equity:,.2f} |",
-        f"| Position weight | {weight*100:.1f}% |",
-        f"| Cumulative fills | {fills} |",
     ]
+    for key in (
+        "Cash", "Position", "Equity", "Position weight", "Target weight",
+        "Vol20 (ann.)", "Raw momentum", "Drawdown from 120d peak",
+        "Cumulative fills", "Pending candidates", "Data source",
+    ):
+        if key in metrics:
+            lines.append(f"| {key} | {metrics[key]} |")
+    return lines
+
+
+def _independent_tracks_summary(include_independent_tracks: bool = True) -> list[str]:
+    if not include_independent_tracks:
+        return []
+    lines: list[str] = []
+    vt_lines = _vt_trend_section_from_report()
+    tsmom_lines = _tsmom_section_from_report()
+    if vt_lines or tsmom_lines:
+        lines += [
+            "",
+            "---",
+            "",
+            "## Independent Track Summaries — Research Only",
+            "",
+            "These tracks run in isolated mock portfolios (not the ensemble). "
+            "They are surfaced here for visibility only; no live orders, no broker integration.",
+        ]
+    if vt_lines:
+        lines.extend(vt_lines)
+    if tsmom_lines:
+        lines.extend(tsmom_lines)
+    if vt_lines or tsmom_lines:
+        lines += [
+            "",
+            "*Track reports are read-only snapshots. No ensemble wiring. No live trading.*",
+        ]
     return lines
 
 
@@ -103,6 +135,7 @@ def render_report(
     factor_snapshots: dict[str, FactorSnapshot] | None = None,
     options_research: dict[str, list[CoveredCallCandidate] | list[CashSecuredPutCandidate] | list[str]] | None = None,
     paper: OptionPaperPortfolio | None = None,
+    include_independent_tracks: bool = True,
 ) -> str:
     ensure_dirs()
     candidates = candidates or []
@@ -235,8 +268,7 @@ def render_report(
     lines += ["", "## Data sources"]
     for sym, src in sorted(data_sources.items()):
         lines.append(f"- {sym}: {src}")
-    lines += _vt_trend_section()
-    lines += _tsmom_section()
+    lines += _independent_tracks_summary(include_independent_tracks)
     lines += [
         "",
         "## Research basis",
