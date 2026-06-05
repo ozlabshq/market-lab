@@ -78,6 +78,9 @@ def main() -> int:
     print(f"Tracks: {', '.join(tracks_to_run)}")
     print("-" * 60)
 
+    if args.require_live_data:
+        print(f"Running tracks with --require-live-data: any non-live data will cause failure.")
+
     all_ok = True
     outputs: dict[str, tuple[str, str]] = {}
 
@@ -109,6 +112,13 @@ def main() -> int:
             all_ok = False
         else:
             print(f"    {name} completed OK")
+
+        # Enforce require-live-data at runner level too: if track reports cache/synthetic, fail
+        if args.require_live_data and rc == 0:
+            combined = stdout + stderr
+            if "Data source | cache" in combined or "Data source | synthetic" in combined:
+                print(f"    *** {name} reports non-live data source — treating as failure ***", file=sys.stderr)
+                all_ok = False
 
     print("\n" + "=" * 60)
     print(" Summary ")

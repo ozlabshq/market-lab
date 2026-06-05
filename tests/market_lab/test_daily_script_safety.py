@@ -8,6 +8,7 @@ class DailyScriptSafetyTests(unittest.TestCase):
     def test_live_data_guard_treats_cached_synthetic_as_synthetic(self):
         self.assertTrue(_source_is_synthetic("synthetic"))
         self.assertTrue(_source_is_synthetic("cache_synthetic"))
+        self.assertTrue(_source_is_synthetic("cache"))
         self.assertFalse(_source_is_synthetic("yfinance"))
         self.assertFalse(_source_is_synthetic("yfinance_info"))
 

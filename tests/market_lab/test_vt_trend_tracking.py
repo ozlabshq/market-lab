@@ -175,12 +175,16 @@ class VtTrendTrackingTests(unittest.TestCase):
 
     def test_vt_trend_synthetic_data_refusal(self):
         # Simulate the --require-live-data gate by checking source string
-        source = "synthetic"
-        self.assertTrue("synthetic" in source.lower())
-        # In the real script this would abort; here we verify the gate logic
+        from scripts.market_lab_vt_trend import _source_is_synthetic
+        self.assertTrue(_source_is_synthetic("synthetic"))
+        self.assertTrue(_source_is_synthetic("cache"))
+        self.assertTrue(_source_is_synthetic("cache_synthetic"))
+        self.assertFalse(_source_is_synthetic("yfinance"))
         require_live_data = True
-        should_abort = require_live_data and "synthetic" in source.lower()
-        self.assertTrue(should_abort)
+        for source in ("synthetic", "cache", "cache_synthetic"):
+            should_abort = require_live_data and _source_is_synthetic(source)
+            self.assertTrue(should_abort, f"expected abort for source={source}")
+        self.assertFalse(require_live_data and _source_is_synthetic("yfinance"))
 
 
 if __name__ == "__main__":

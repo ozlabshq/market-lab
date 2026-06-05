@@ -42,7 +42,7 @@ from market_lab.signals import (
 
 
 def _source_is_synthetic(source: str) -> bool:
-    return "synthetic" in source.lower()
+    return source.strip().lower() in {"synthetic", "cache", "cache_synthetic"}
 
 
 def _dedupe_candidates(candidates: list[OrderCandidate]) -> list[OrderCandidate]:

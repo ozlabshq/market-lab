@@ -34,7 +34,11 @@ from market_lab.signals import generate_vt_trend_signal
 
 
 def _source_is_synthetic(source: str) -> bool:
-    return "synthetic" in source.lower()
+    return source.strip().lower() in {"synthetic", "cache", "cache_synthetic"}
+
+
+def _source_is_live(source: str) -> bool:
+    return source.strip().lower() == "yfinance"
 
 
 def _current_weight(portfolio: Portfolio, symbol: str, price: float) -> float:
