@@ -116,6 +116,7 @@ def diagnose_trade(
     hypothesis: str | None = None,
     confidence_at_entry: float = 0.0,
     data_quality: str = "live_or_cache",
+    bars_before_entry: list[Bar] | None = None,
 ) -> TradeDiagnosis:
     if not decision.accepted or decision.fill_price is None:
         raise ValueError("diagnose_trade requires an accepted decision with a fill_price")
@@ -124,7 +125,13 @@ def diagnose_trade(
 
     exit_price = bars_after_entry[-1].close
     pnl_pct = _trade_pnl_pct(decision.side, decision.fill_price, exit_price)
-    regime = label_regime(bars_after_entry)
+    if bars_before_entry is not None and len(bars_after_entry) < 20:
+        if len(bars_before_entry) >= 20:
+            regime = label_regime(bars_before_entry)
+        else:
+            regime = "insufficient_history"
+    else:
+        regime = label_regime(bars_after_entry)
     failure = _failure_mode(decision.side, decision.fill_price, exit_price, bars_after_entry, decision.requested_price)
     entry_date = bars_after_entry[0].date.isoformat()
     exit_date = bars_after_entry[-1].date.isoformat() if len(bars_after_entry) > 1 else None

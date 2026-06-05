@@ -353,7 +353,7 @@ class DiagnosisCouncilTests(unittest.TestCase):
             self.assertNotEqual(diagnoses[0].regime_label, "unknown")
             self.assertEqual(diagnoses[0].regime_label, "trending_up")
 
-    def test_regime_label_is_unknown_with_short_post_entry_bars(self):
+    def test_regime_label_is_insufficient_history_with_short_post_entry_bars(self):
         with tempfile.TemporaryDirectory() as td:
             evidence_dir = Path(td) / "evidence"
             buy = OrderDecision(True, "BUY", "SPY", 10, 100.0, 100.0, "accepted", "2026-01-03T15:00:00Z", execution_date="2026-01-03")
@@ -367,7 +367,39 @@ class DiagnosisCouncilTests(unittest.TestCase):
                 diagnoses = market_lab_review.diagnose_new_mock_decisions(days=11)
 
             self.assertEqual(len(diagnoses), 1)
-            self.assertEqual(diagnoses[0].regime_label, "unknown")
+            self.assertEqual(diagnoses[0].regime_label, "insufficient_history")
+
+    def test_regime_label_uses_pre_entry_bars_when_post_entry_is_short(self):
+        with tempfile.TemporaryDirectory() as td:
+            evidence_dir = Path(td) / "evidence"
+            buy = OrderDecision(True, "BUY", "SPY", 10, 100.0, 100.0, "accepted", "2026-05-09T15:00:00Z", execution_date="2026-05-09")
+            fetched = bars_from_closes([100 + i for i in range(140)], start=date(2026, 1, 1))
+
+            with (
+                patch.object(market_lab_review, "EVIDENCE_DIR", evidence_dir),
+                patch.object(market_lab_review, "_load_accepted_decisions", return_value=[buy]),
+                patch.object(market_lab_review, "fetch_prices", return_value=(fetched, "cache")),
+            ):
+                diagnoses = market_lab_review.diagnose_new_mock_decisions(days=140)
+
+            self.assertEqual(len(diagnoses), 1)
+            self.assertEqual(diagnoses[0].regime_label, "trending_up")
+
+    def test_regime_label_falls_back_to_post_entry_when_sufficient(self):
+        with tempfile.TemporaryDirectory() as td:
+            evidence_dir = Path(td) / "evidence"
+            buy = OrderDecision(True, "BUY", "SPY", 10, 100.0, 100.0, "accepted", "2025-10-05T15:00:00Z", execution_date="2025-10-05")
+            fetched = bars_from_closes([100 + i for i in range(120)], start=date(2025, 10, 1))
+
+            with (
+                patch.object(market_lab_review, "EVIDENCE_DIR", evidence_dir),
+                patch.object(market_lab_review, "_load_accepted_decisions", return_value=[buy]),
+                patch.object(market_lab_review, "fetch_prices", return_value=(fetched, "cache")),
+            ):
+                diagnoses = market_lab_review.diagnose_new_mock_decisions(days=120)
+
+            self.assertEqual(len(diagnoses), 1)
+            self.assertEqual(diagnoses[0].regime_label, "trending_up")
 
 
 if __name__ == "__main__":

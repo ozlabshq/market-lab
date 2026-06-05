@@ -126,6 +126,7 @@ def diagnose_new_mock_decisions(days: int = 120, prefer_network: bool = False, l
         entry_date = _decision_date(decision)
         if not bars or bars[0].date > entry_date:
             continue
+        pre_entry_bars = [bar for bar in bars if bar.date < entry_date]
         bars = _bars_from_decision_date(bars, decision)
         if len(bars) < 2:
             continue
@@ -136,6 +137,7 @@ def diagnose_new_mock_decisions(days: int = 120, prefer_network: bool = False, l
             evidence_snapshot={"ledger_reason": decision.reason},
             benchmark_return=0.0,
             data_quality="synthetic" if "synthetic" in source.lower() else "live_or_cache",
+            bars_before_entry=pre_entry_bars,
         )
         existing = latest_existing.get(diagnosis.decision_id)
         if existing is not None:
