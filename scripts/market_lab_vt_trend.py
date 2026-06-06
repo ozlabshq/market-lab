@@ -286,7 +286,7 @@ def main() -> int:
         portfolio, price, sig, decisions, remaining, days_active, fills_count, source,
         spy_benchmark=compute_spy_benchmark(
             starting_cash=VT_TREND_STARTING_CASH,
-            start_date=start_date,
+            start_date=start_date or date.today(),
             days=args.days,
             prefer_network=args.network,
         ),
