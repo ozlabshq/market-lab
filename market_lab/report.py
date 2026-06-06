@@ -136,6 +136,7 @@ def render_report(
     options_research: dict[str, list[CoveredCallCandidate] | list[CashSecuredPutCandidate] | list[str]] | None = None,
     paper: OptionPaperPortfolio | None = None,
     include_independent_tracks: bool = True,
+    spy_benchmark: dict[str, float | str | None] | None = None,
 ) -> str:
     ensure_dirs()
     candidates = candidates or []
@@ -143,6 +144,7 @@ def render_report(
     cross_sectional = cross_sectional or []
     factor_snapshots = factor_snapshots or {}
     options_research = options_research or {"covered_calls": [], "cash_secured_puts": [], "warnings": []}
+    spy_benchmark = spy_benchmark or {}
     now = datetime.now().strftime("%Y-%m-%d %H:%M %Z")
     buys = [s for s in rank_signals(signals) if s.action == "BUY"][:8]
     holds = [s for s in rank_signals(signals) if s.action == "HOLD"][:8]
@@ -165,6 +167,36 @@ def render_report(
         f"- Estimated equity: ${portfolio.equity(prices):,.2f}",
         f"- Open positions: {len(portfolio.positions)}",
         "",
+    ]
+    # SPY buy/hold benchmark section
+    bm_equity = spy_benchmark.get("benchmark_equity")
+    bm_return = spy_benchmark.get("benchmark_return")
+    bm_start_price = spy_benchmark.get("start_price")
+    bm_current_price = spy_benchmark.get("current_price")
+    bm_start_date = spy_benchmark.get("start_date_str")
+    bm_source = spy_benchmark.get("data_source")
+    if isinstance(bm_equity, (int, float)) and isinstance(bm_start_price, (int, float)) and isinstance(bm_current_price, (int, float)):
+        equity = portfolio.equity(prices)
+        vs_bm = (equity / bm_equity - 1) if bm_equity > 0 else 0.0
+        vs_bm_str = f"{vs_bm:+.2%}"
+        bm_ret_str = f"{bm_return:+.2%}" if isinstance(bm_return, (int, float)) else "n/a"
+        lines += [
+            "## SPY Buy/Hold Benchmark",
+            f"- Benchmark start: {bm_start_date} (SPY @ ${bm_start_price:,.2f})",
+            f"- SPY current: ${bm_current_price:,.2f}",
+            f"- Benchmark equity: ${bm_equity:,.2f} ({bm_ret_str})",
+            f"- Portfolio equity: ${equity:,.2f}",
+            f"- Portfolio vs benchmark: {vs_bm_str}",
+            f"- Benchmark data source: {bm_source}",
+            "",
+        ]
+    else:
+        lines += [
+            "## SPY Buy/Hold Benchmark",
+            "- SPY benchmark unavailable (no price data)",
+            "",
+        ]
+    lines += [
         "## Factor Lens — valuation / quality / growth / AI exposure",
     ]
     if not factor_snapshots:

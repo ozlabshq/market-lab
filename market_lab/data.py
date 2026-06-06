@@ -136,3 +136,46 @@ def latest_close(bars: list[Bar]) -> float:
     if not bars:
         raise ValueError("No bars available")
     return bars[-1].close
+
+
+def compute_spy_benchmark(starting_cash: float, start_date: date | None = None, days: int = 260, prefer_network: bool = True) -> dict[str, float | str | None]:
+    """Compute what starting_cash invested in SPY buy/hold would be worth today.
+
+    Returns a dict with:
+      - benchmark_equity: current dollar value of the buy/hold position
+      - benchmark_return: total return fraction (e.g. -0.025 for -2.5%)
+      - start_price: SPY close on the benchmark start date
+      - current_price: latest SPY close
+      - start_date_str: ISO date string of the actual start bar used
+      - data_source: where the prices came from
+    """
+    bars, source = fetch_prices("SPY", days=days, prefer_network=prefer_network)
+    if not bars:
+        return {
+            "benchmark_equity": starting_cash,
+            "benchmark_return": 0.0,
+            "start_price": None,
+            "current_price": None,
+            "start_date_str": None,
+            "data_source": source,
+        }
+    if start_date is not None:
+        start_bar = next((b for b in bars if b.date >= start_date), bars[0])
+    else:
+        start_bar = bars[0]
+    start_price = start_bar.close
+    current_price = bars[-1].close
+    if start_price and start_price > 0:
+        benchmark_equity = (current_price / start_price) * starting_cash
+        benchmark_return = current_price / start_price - 1
+    else:
+        benchmark_equity = starting_cash
+        benchmark_return = 0.0
+    return {
+        "benchmark_equity": benchmark_equity,
+        "benchmark_return": benchmark_return,
+        "start_price": start_price,
+        "current_price": current_price,
+        "start_date_str": start_bar.date.isoformat(),
+        "data_source": source,
+    }

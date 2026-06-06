@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import date
 from pathlib import Path
@@ -17,7 +18,7 @@ from market_lab.broker import (
     save_order_candidates,
 )
 from market_lab.config import DEFAULT_UNIVERSE, RISK, OPTIONS_CHAIN_DIR, OPTIONS_RISK, ensure_dirs
-from market_lab.data import fetch_prices
+from market_lab.data import fetch_prices, compute_spy_benchmark
 from market_lab.factors import fetch_factors
 from market_lab.options_data import fetch_option_chain_snapshot, load_available_option_chains, save_option_chain_snapshot
 from market_lab.options_paper import (
@@ -133,6 +134,28 @@ def _execute_due_candidates(bars_by_symbol, prices):
     return decisions, remaining
 
 
+def _earliest_ledger_date(ledger_path: Path) -> date | None:
+    """Return the earliest execution_date or signal_date from the ledger."""
+    if not ledger_path.exists():
+        return None
+    earliest = None
+    try:
+        with ledger_path.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                data = json.loads(line)
+                ts = data.get("execution_date") or data.get("signal_date") or data.get("timestamp", "")[:10]
+                if ts:
+                    d = date.fromisoformat(ts)
+                    if earliest is None or d < earliest:
+                        earliest = d
+    except Exception:
+        pass
+    return earliest
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run OzLabs Market Lab daily research/report tracker")
     parser.add_argument("--symbols", nargs="*", default=DEFAULT_UNIVERSE)
@@ -227,7 +250,16 @@ def main() -> int:
             queued_option_candidates = selected_options
             save_option_paper_candidates(_dedupe_option_candidates(load_option_paper_candidates() + queued_option_candidates))
     options_research = {"covered_calls": covered_calls, "cash_secured_puts": cash_secured_puts, "warnings": option_warnings, "option_decisions": option_decisions, "queued_option_candidates": queued_option_candidates}
-    text = render_report(ensemble_signals, backtests, decisions, portfolio, prices, sources, queued_candidates, family_signals, cross_sectional, factors_by_symbol, options_research, paper=paper_options)
+    # SPY buy/hold benchmark aligned to first ensemble ledger fill date
+    from market_lab.config import LEDGER_PATH
+    bm_start = _earliest_ledger_date(LEDGER_PATH)
+    spy_benchmark = compute_spy_benchmark(
+        starting_cash=RISK.starting_cash,
+        start_date=bm_start,
+        days=args.days,
+        prefer_network=args.network,
+    )
+    text = render_report(ensemble_signals, backtests, decisions, portfolio, prices, sources, queued_candidates, family_signals, cross_sectional, factors_by_symbol, options_research, paper=paper_options, spy_benchmark=spy_benchmark)
     path = save_report(text)
     print(path)
     print(text)

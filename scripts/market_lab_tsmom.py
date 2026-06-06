@@ -29,7 +29,7 @@ from market_lab.config import (
     TSMOM_STATE,
     ensure_dirs,
 )
-from market_lab.data import fetch_prices
+from market_lab.data import fetch_prices, compute_spy_benchmark
 from market_lab.signals import generate_tsmom_signal
 
 
@@ -160,6 +160,7 @@ def _render_tsmom_report(
     days_active: int,
     fills_count: int,
     source: str,
+    spy_benchmark: dict[str, float | str | None] | None = None,
 ) -> str:
     equity = portfolio.equity({sig.symbol: price})
     pos = portfolio.positions.get(sig.symbol.upper())
@@ -172,6 +173,9 @@ def _render_tsmom_report(
     raw_momentum = evidence.get("raw_momentum", 0.0)
     drawdown_from_peak = evidence.get("drawdown_from_peak", 0.0)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M %Z")
+    spy_benchmark = spy_benchmark or {}
+    bm_equity = spy_benchmark.get("benchmark_equity")
+    bm_return = spy_benchmark.get("benchmark_return")
     lines = [
         f"# TSMOM Independent Mock Tracking — {now}",
         "",
@@ -192,6 +196,13 @@ def _render_tsmom_report(
         f"| Cumulative fills | {fills_count} |",
         f"| Pending candidates | {len(pending)} |",
         f"| Data source | {source} |",
+    ]
+    if isinstance(bm_equity, (int, float)) and isinstance(bm_return, (int, float)):
+        lines += [
+            f"| SPY benchmark equity | ${bm_equity:,.2f} |",
+            f"| SPY benchmark return | {bm_return:+.2%} |",
+        ]
+    lines += [
         "",
         "## Decisions today",
     ]
@@ -268,6 +279,12 @@ def main() -> int:
 
     report = _render_tsmom_report(
         portfolio, price, sig, decisions, remaining, days_active, fills_count, source,
+        spy_benchmark=compute_spy_benchmark(
+            starting_cash=TSMOM_STARTING_CASH,
+            start_date=start_date,
+            days=args.days,
+            prefer_network=args.network,
+        ),
     )
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
