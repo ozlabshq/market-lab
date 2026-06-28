@@ -45,6 +45,17 @@ def _insufficient(symbol: str, bars: list[Bar], strategy: str, needed: int) -> S
     return Signal(symbol, "HOLD", 0.0, f"{strategy}: insufficient history; need {needed} bars", _close(bars), None, None, None, None, strategy)
 
 
+def _momentum_over_lookback(bars: list[Bar], lookback: int) -> float | None:
+    """Lookahead-free trailing return ending at the latest provided bar."""
+    if lookback <= 0 or len(bars) < lookback:
+        return None
+    start = bars[-lookback].close
+    end = bars[-1].close
+    if start <= 0 or end <= 0:
+        return None
+    return end / start - 1.0
+
+
 def generate_signal(symbol: str, bars: list[Bar]) -> Signal:
     """Legacy baseline technical score: useful as a sanity-check, not an edge claim."""
     if len(bars) < 60:
@@ -90,11 +101,13 @@ def generate_signal(symbol: str, bars: list[Bar]) -> Signal:
     return Signal(symbol, action, _clamp(score), "; ".join(reasons) or "no clear edge", close, r14, s20, s50, vol20)
 
 
-def generate_tsmom_signal(symbol: str, bars: list[Bar], lookbacks: tuple[int, ...] = (20, 60, 120), target_vol: float = 0.15) -> Signal:
+def generate_tsmom_signal(symbol: str, bars: list[Bar], lookbacks: tuple[int, ...] = (20, 60, 120), target_vol: float = 0.15, spy_bars: list[Bar] | None = None) -> Signal:
     """Time-series momentum / trend-following signal.
 
     Literature basis: Moskowitz/Ooi/Pedersen TSMOM, Hurst/Ooi/Pedersen trend following,
     and classic practitioner trend filters. EOD signal only; execution must happen next bar.
+    Optional SPY bars add a benchmark-relative dual-momentum guard: buy only when the
+    asset's trailing momentum beats SPY and SPY itself is in a positive regime.
     """
     needed = max(lookbacks) + 21
     if len(bars) < needed:
@@ -114,12 +127,25 @@ def generate_tsmom_signal(symbol: str, bars: list[Bar], lookbacks: tuple[int, ..
     regime_ok = bool(s100 and close > s100 and vol20 < 1.00)
     vol_scaled = raw_momentum / max(vol20, 0.05)
     confidence = _clamp(abs(vol_scaled) * 0.55)
-    evidence = {"raw_momentum": raw_momentum, "vol20": vol20, "vol_scaled": vol_scaled, "target_vol": target_vol, "drawdown_from_peak": drawdown_from_peak}
+    evidence: dict[str, float | str | None] = {"raw_momentum": raw_momentum, "vol20": vol20, "vol_scaled": vol_scaled, "target_vol": target_vol, "drawdown_from_peak": drawdown_from_peak}
+    spy_momentum = None
+    relative_momentum = None
+    if spy_bars is not None:
+        aligned_spy_bars = spy_bars[-len(bars):] if len(spy_bars) > len(bars) else spy_bars
+        spy_momentum = _momentum_over_lookback(aligned_spy_bars, max(lookbacks))
+        if spy_momentum is not None:
+            relative_momentum = raw_momentum - spy_momentum
+            evidence.update({"spy_momentum": spy_momentum, "spy_relative_momentum": relative_momentum})
     if drawdown_from_peak <= -0.15:
         return Signal(symbol, "SELL", max(0.45, confidence), f"TSMOM negative/drawdown guard: {drawdown_from_peak:.1%} below trailing peak; reduce/avoid", close, r14, s20, s50, vol20, "tsmom", 0.0, evidence)
+    if spy_momentum is not None and spy_momentum <= 0:
+        return Signal(symbol, "SELL", max(0.35, confidence), f"TSMOM SPY regime guard: SPY momentum {spy_momentum:.1%}; reduce/avoid beta exposure", close, r14, s20, s50, vol20, "tsmom", 0.0, evidence)
     if raw_momentum > 0.03 and trend_confirmed and regime_ok:
+        if spy_momentum is not None and raw_momentum <= spy_momentum:
+            return Signal(symbol, "HOLD", 0.0, f"TSMOM relative-momentum guard: asset {raw_momentum:.1%} <= SPY {spy_momentum:.1%}; no entry", close, r14, s20, s50, vol20, "tsmom", 0.0, evidence)
         target_weight = _clamp(target_vol / max(vol20, 0.05), 0.02, 0.20)
-        return Signal(symbol, "BUY", max(0.35, confidence), f"TSMOM positive {raw_momentum:.1%}; trend confirmed; vol {vol20:.0%}; next-open candidate only", close, r14, s20, s50, vol20, "tsmom", target_weight, evidence)
+        rel_reason = f"; beats SPY by {relative_momentum:.1%}" if relative_momentum is not None else ""
+        return Signal(symbol, "BUY", max(0.35, confidence), f"TSMOM positive {raw_momentum:.1%}; trend confirmed; vol {vol20:.0%}{rel_reason}; next-open candidate only", close, r14, s20, s50, vol20, "tsmom", target_weight, evidence)
     if raw_momentum < -0.03 or (s100 and close < s100):
         return Signal(symbol, "SELL", max(0.30, confidence), f"TSMOM negative/broken regime: momentum {raw_momentum:.1%}, close vs SMA100 {(close / s100 - 1) if s100 else 0:.1%}; reduce/avoid", close, r14, s20, s50, vol20, "tsmom", 0.0, evidence)
     return Signal(symbol, "HOLD", confidence, f"TSMOM neutral: momentum {raw_momentum:.1%}, vol {vol20:.0%}; no forced trade", close, r14, s20, s50, vol20, "tsmom", 0.0, evidence)
@@ -218,16 +244,26 @@ def generate_vt_trend_signal(symbol: str, bars: list[Bar], target_vol: float = 0
     return Signal(symbol, action, confidence, reason, close, r14, s20, s50, vol20, "vt_trend", target_weight, evidence)
 
 
-def generate_strategy_signals(symbol: str, bars: list[Bar]) -> list[Signal]:
-    return [generate_tsmom_signal(symbol, bars), generate_rsi_pullback_signal(symbol, bars), generate_signal(symbol, bars)]
+def generate_strategy_signals(symbol: str, bars: list[Bar], spy_bars: list[Bar] | None = None) -> list[Signal]:
+    return [generate_tsmom_signal(symbol, bars, spy_bars=spy_bars), generate_rsi_pullback_signal(symbol, bars), generate_signal(symbol, bars)]
 
 
-def generate_ensemble_signal(symbol: str, bars: list[Bar]) -> Signal:
-    family = generate_strategy_signals(symbol, bars)
+def generate_ensemble_signal(symbol: str, bars: list[Bar], spy_bars: list[Bar] | None = None) -> Signal:
+    family = generate_strategy_signals(symbol, bars, spy_bars=spy_bars)
     close = _close(bars)
     buy_score = sum(s.confidence for s in family if s.action == "BUY")
     sell_score = sum(s.confidence for s in family if s.action == "SELL")
     primary = max(family, key=lambda s: s.confidence) if family else _insufficient(symbol, bars, "ensemble", 120)
+    spy_momentum = None
+    raw_momentum = None
+    if spy_bars is not None:
+        spy_momentum = _momentum_over_lookback(spy_bars[-len(bars):] if len(spy_bars) > len(bars) else spy_bars, 120)
+        raw_momentum = _momentum_over_lookback(bars, 120)
+        if spy_momentum is not None and spy_momentum <= 0:
+            sell_score = max(sell_score, 0.60)
+            buy_score *= 0.35
+        elif spy_momentum is not None and raw_momentum is not None and raw_momentum <= spy_momentum:
+            buy_score *= 0.50
     if buy_score >= 0.70 and buy_score > sell_score:
         action = "BUY"
         confidence = _clamp(buy_score / max(len(family), 1) + 0.35)
@@ -238,12 +274,23 @@ def generate_ensemble_signal(symbol: str, bars: list[Bar]) -> Signal:
         action = "HOLD"
         confidence = _clamp(max(buy_score, sell_score) / max(len(family), 1))
     reason = "ensemble: " + " | ".join(f"{s.strategy}={s.action}/{s.confidence:.2f}" for s in family)
-    return Signal(symbol, action, confidence, reason, close, primary.rsi14, primary.sma20, primary.sma50, primary.volatility20, "ensemble", max((s.target_weight for s in family if s.action == "BUY"), default=0.0), {"buy_score": buy_score, "sell_score": sell_score})
+    evidence: dict[str, float | str | None] = {"buy_score": buy_score, "sell_score": sell_score}
+    if spy_momentum is not None:
+        evidence.update({"spy_momentum": spy_momentum, "asset_120d_momentum": raw_momentum, "spy_relative_momentum": (raw_momentum - spy_momentum) if raw_momentum is not None else None})
+        reason += f" | SPY guard: asset {raw_momentum:.1%} vs SPY {spy_momentum:.1%}" if raw_momentum is not None else f" | SPY guard: SPY {spy_momentum:.1%}"
+    return Signal(symbol, action, confidence, reason, close, primary.rsi14, primary.sma20, primary.sma50, primary.volatility20, "ensemble", max((s.target_weight for s in family if s.action == "BUY"), default=0.0) if action == "BUY" else 0.0, evidence)
 
 
-def cross_sectional_momentum_ranks(bars_by_symbol: dict[str, list[Bar]], formation_days: int = 126, skip_days: int = 21) -> list[CrossSectionalRank]:
+def cross_sectional_momentum_ranks(bars_by_symbol: dict[str, list[Bar]], formation_days: int = 126, skip_days: int = 21, spy_bars: list[Bar] | None = None) -> list[CrossSectionalRank]:
     scores: list[tuple[str, float]] = []
     needed = formation_days + skip_days + 1
+    spy_score = None
+    if spy_bars and len(spy_bars) >= needed:
+        spy_closes = [b.close for b in spy_bars]
+        spy_end_idx = len(spy_closes) - skip_days - 1
+        spy_start_idx = spy_end_idx - formation_days
+        if spy_start_idx >= 0 and spy_closes[spy_start_idx] > 0:
+            spy_score = spy_closes[spy_end_idx] / spy_closes[spy_start_idx] - 1.0
     for symbol, bars in bars_by_symbol.items():
         if len(bars) < needed:
             continue
@@ -253,13 +300,16 @@ def cross_sectional_momentum_ranks(bars_by_symbol: dict[str, list[Bar]], formati
         if start_idx < 0 or closes[start_idx] <= 0:
             continue
         score = closes[end_idx] / closes[start_idx] - 1.0
+        if spy_score is not None and symbol.upper() != "SPY":
+            score -= spy_score
         scores.append((symbol, score))
     scores.sort(key=lambda item: item[1], reverse=True)
     n = len(scores)
     ranks: list[CrossSectionalRank] = []
     for idx, (symbol, score) in enumerate(scores, start=1):
         percentile = 1.0 - ((idx - 1) / max(n - 1, 1)) if n > 1 else 1.0
-        ranks.append(CrossSectionalRank(symbol, score, idx, percentile, f"6m momentum with 1m skip: {score:.1%}"))
+        reason = f"6m excess momentum vs SPY with 1m skip: {score:.1%}" if spy_score is not None and symbol.upper() != "SPY" else f"6m momentum with 1m skip: {score:.1%}"
+        ranks.append(CrossSectionalRank(symbol, score, idx, percentile, reason))
     return ranks
 
 

@@ -193,6 +193,26 @@ class DualMomentumTests(unittest.TestCase):
         self.assertEqual([t.symbol for t in targets], ["A", "B"])
         self.assertTrue(all(abs(t.target_weight - 0.30) < 1e-9 for t in targets))
 
+    def test_dual_momentum_filters_symbols_below_spy_momentum(self):
+        bars_by_symbol = {
+            "LEADER": bars_from_prices(linear_series(100, 0.60, n=180)),
+            "LAGGER": bars_from_prices(linear_series(100, 0.15, n=180)),
+        }
+        spy_bars = bars_from_prices(linear_series(100, 0.30, n=180))
+
+        targets = dual_momentum_targets(
+            bars_by_symbol,
+            formation_days=90,
+            skip_days=0,
+            top_n=3,
+            absolute_threshold=0.0,
+            max_weight=0.40,
+            spy_bars=spy_bars,
+        )
+
+        self.assertEqual([t.symbol for t in targets], ["LEADER"])
+        self.assertIn("benchmark/absolute filter", targets[0].reason)
+
 
 if __name__ == "__main__":
     unittest.main()

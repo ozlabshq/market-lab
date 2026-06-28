@@ -21,9 +21,11 @@ def ema(values: list[float], window: int) -> list[float | None]:
     return out
 
 def returns(values: list[float]) -> list[float | None]:
-    out=[None]
+    out: list[float | None]=[None]
     for prev, cur in zip(values, values[1:]):
-        out.append(None if prev == 0 else cur/prev - 1)
+        prev_f = float(prev)
+        cur_f = float(cur)
+        out.append(None if prev_f == 0 or not math.isfinite(prev_f) or not math.isfinite(cur_f) else cur_f/prev_f - 1)
     return out
 
 def rsi(values: list[float], window: int = 14) -> list[float | None]:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import sqrt
+from math import isfinite, sqrt
 from statistics import mean, pstdev
 
 from .data import Bar
@@ -73,6 +73,7 @@ def dual_momentum_targets(
     absolute_threshold: float = 0.0,
     max_weight: float = 0.20,
     decision_index: int | None = None,
+    spy_bars: list[Bar] | None = None,
 ) -> list[MomentumTarget]:
     """Select relative winners that also pass an absolute momentum filter.
 
@@ -86,6 +87,19 @@ def dual_momentum_targets(
         raise ValueError("skip_days must be non-negative")
     if top_n <= 0:
         return []
+
+    spy_threshold = absolute_threshold
+    if spy_bars:
+        if decision_index is None:
+            spy_idx = len(spy_bars) - 1
+        elif decision_index < len(spy_bars):
+            spy_idx = decision_index
+        else:
+            spy_idx = -1
+        if spy_idx >= 0:
+            spy_momentum = _return_between(spy_bars, spy_idx - formation_days, spy_idx)
+            if spy_momentum is not None:
+                spy_threshold = max(absolute_threshold, spy_momentum)
 
     scores: list[tuple[str, float, float]] = []
     for symbol, bars in bars_by_symbol.items():
@@ -104,7 +118,7 @@ def dual_momentum_targets(
         scores.append((symbol.upper(), relative_score, absolute_momentum))
 
     scores.sort(key=lambda item: item[1], reverse=True)
-    selected = [(symbol, relative_score, absolute_momentum) for symbol, relative_score, absolute_momentum in scores if absolute_momentum > absolute_threshold][:top_n]
+    selected = [(symbol, relative_score, absolute_momentum) for symbol, relative_score, absolute_momentum in scores if absolute_momentum > spy_threshold][:top_n]
     if not selected:
         return []
 
@@ -116,7 +130,7 @@ def dual_momentum_targets(
             relative_score=relative_score,
             absolute_momentum=absolute_momentum,
             target_weight=equal_weight,
-            reason=f"dual momentum rank {rank}: relative {relative_score:.1%}; absolute {absolute_momentum:.1%} > {absolute_threshold:.1%} filter",
+            reason=f"dual momentum rank {rank}: relative {relative_score:.1%}; absolute {absolute_momentum:.1%} > {spy_threshold:.1%} benchmark/absolute filter",
         )
         for rank, (symbol, relative_score, absolute_momentum) in enumerate(selected, start=1)
     ]
@@ -145,8 +159,9 @@ def _align_on_common_dates(bars_by_symbol: dict[str, list[Bar]]) -> dict[str, li
 
 
 def _stats(equity_curve: list[float]) -> tuple[float, float, float]:
-    rets = [equity_curve[i] / equity_curve[i - 1] - 1 for i in range(1, len(equity_curve)) if equity_curve[i - 1] > 0]
-    sharpe = (mean(rets) / pstdev(rets) * sqrt(252)) if len(rets) > 2 and pstdev(rets) > 0 else 0.0
+    rets = [float(equity_curve[i]) / float(equity_curve[i - 1]) - 1 for i in range(1, len(equity_curve)) if float(equity_curve[i - 1]) > 0 and isfinite(float(equity_curve[i])) and isfinite(float(equity_curve[i - 1]))]
+    ret_std = pstdev(rets) if len(rets) > 2 else 0.0
+    sharpe = (mean(rets) / ret_std * sqrt(252)) if len(rets) > 2 and ret_std > 0 else 0.0
     mdd = max_drawdown(equity_curve)
     total_return = equity_curve[-1] / equity_curve[0] - 1 if equity_curve and equity_curve[0] > 0 else 0.0
     return total_return, mdd, sharpe

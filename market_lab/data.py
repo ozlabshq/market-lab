@@ -29,6 +29,17 @@ class Bar:
             "volume": str(int(self.volume)),
         }
 
+def _finite_price(value: float) -> bool:
+    try:
+        return math.isfinite(float(value)) and float(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _valid_bar(bar: Bar) -> bool:
+    return all(_finite_price(v) for v in (bar.open, bar.high, bar.low, bar.close)) and bar.high >= bar.low and bar.volume >= 0
+
+
 def price_path(symbol: str) -> Path:
     safe = symbol.upper().replace("/", "_").replace("-", "_")
     return PRICE_DIR / f"{safe}.csv"
@@ -43,11 +54,16 @@ def _load_prices_from_path(path: Path) -> list[Bar]:
     bars: list[Bar] = []
     with path.open(newline="") as f:
         for row in csv.DictReader(f):
-            bars.append(Bar(
-                date=datetime.strptime(row["date"], "%Y-%m-%d").date(),
-                open=float(row["open"]), high=float(row["high"]), low=float(row["low"]),
-                close=float(row["close"]), volume=int(float(row["volume"])),
-            ))
+            try:
+                bar = Bar(
+                    date=datetime.strptime(row["date"], "%Y-%m-%d").date(),
+                    open=float(row["open"]), high=float(row["high"]), low=float(row["low"]),
+                    close=float(row["close"]), volume=int(float(row["volume"])),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            if _valid_bar(bar):
+                bars.append(bar)
     return bars
 
 def load_cached_prices(symbol: str) -> list[Bar]:
@@ -109,13 +125,16 @@ def fetch_prices(symbol: str, days: int = 260, prefer_network: bool = True, max_
                         return value.iloc[0]
                     return value
                 for idx, row in frame.tail(days).iterrows():
-                    bars.append(Bar(
+                    bar = Bar(
                         date=idx.date(),
                         open=float(scalar(row["Open"])), high=float(scalar(row["High"])), low=float(scalar(row["Low"])),
                         close=float(scalar(row["Close"])), volume=int(scalar(row.get("Volume", 0)) or 0),
-                    ))
-                save_prices(symbol, bars)
-                return bars, "yfinance"
+                    )
+                    if _valid_bar(bar):
+                        bars.append(bar)
+                if len(bars) >= min(days, 30):
+                    save_prices(symbol, bars)
+                    return bars[-days:], "yfinance"
         except Exception:
             pass
     cached = load_cached_prices(symbol)
@@ -160,7 +179,7 @@ def compute_spy_benchmark(starting_cash: float, start_date: date | None = None, 
             "data_source": source,
         }
     if start_date is not None:
-        start_bar = next((b for b in bars if b.date >= start_date), bars[0])
+        start_bar = next((b for b in bars if b.date >= start_date), bars[-1])
     else:
         start_bar = bars[0]
     start_price = start_bar.close
