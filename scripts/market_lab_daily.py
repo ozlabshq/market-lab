@@ -40,6 +40,7 @@ from market_lab.signals import (
     generate_tsmom_signal,
     rank_signals,
 )
+from market_lab.verifier import apply_verifier_guard
 
 
 def _source_is_synthetic(source: str) -> bool:
@@ -80,6 +81,14 @@ def _spy_guarded_tsmom(spy_bars):
         spy_history = [bar for bar in spy_bars if hist and bar.date <= hist[-1].date] if spy_bars else None
         return generate_tsmom_signal(symbol, hist, spy_bars=spy_history)
     _signal.__name__ = "generate_tsmom_spy_guarded_signal"
+    return _signal
+
+
+def _ensemble_signal_for_verifier(spy_bars):
+    def _signal(symbol, hist):
+        spy_history = [bar for bar in spy_bars if hist and bar.date <= hist[-1].date] if spy_bars else None
+        return generate_ensemble_signal(symbol, hist, spy_bars=spy_history)
+    _signal.__name__ = "generate_ensemble_signal_for_verifier"
     return _signal
 
 
@@ -244,10 +253,13 @@ def main() -> int:
             if candidate:
                 queued_candidates.append(candidate)
         buy_slots = max(args.max_orders - len(queued_candidates), 0)
+        verifier_func = _ensemble_signal_for_verifier(spy_bars)
         for sig in [s for s in ranked_for_orders if s.action == "BUY"][:buy_slots]:
             candidate = _candidate_from_signal(sig, today, equity, portfolio=portfolio)
             if candidate:
-                queued_candidates.append(candidate)
+                allowed, _ = apply_verifier_guard(candidate, bars_by_symbol.get(sig.symbol), verifier_func, spy_bars=spy_bars)
+                if allowed:
+                    queued_candidates.append(candidate)
         if queued_candidates:
             save_order_candidates(_dedupe_candidates(load_order_candidates() + queued_candidates))
 
