@@ -200,6 +200,12 @@ def main() -> int:
         backtests.append(run_signal_backtest(symbol, bars, generate_tsmom_signal, min_history=140))
         backtests.append(moving_average_cross_backtest(symbol, bars))
 
+    # Ensure benchmark bars are available for the SPY-relative exit governor path.
+    spy_bars = bars_by_symbol.get("SPY")
+    if spy_bars is None:
+        spy_bars, spy_source = fetch_prices("SPY", days=args.days, prefer_network=args.network)
+        sources["SPY:benchmark_guard"] = spy_source
+
     if (args.queue_order_candidates or args.execute_pending_candidates) and args.require_live_data:
         synthetic_symbols = sorted(sym for sym, source in sources.items() if _source_is_synthetic(source))
         if synthetic_symbols:
