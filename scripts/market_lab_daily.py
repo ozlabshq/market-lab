@@ -17,8 +17,9 @@ from market_lab.broker import (
     load_portfolio,
     save_order_candidates,
 )
-from market_lab.config import DEFAULT_UNIVERSE, RISK, OPTIONS_CHAIN_DIR, OPTIONS_RISK, ensure_dirs
+from market_lab.config import DEFAULT_UNIVERSE, LEDGER_PATH, RISK, OPTIONS_CHAIN_DIR, OPTIONS_RISK, ensure_dirs
 from market_lab.data import fetch_prices, compute_spy_benchmark
+from market_lab.exit_governor import evaluate_spy_relative_exits
 from market_lab.factors import fetch_factors
 from market_lab.options_data import fetch_option_chain_snapshot, load_available_option_chains, save_option_chain_snapshot
 from market_lab.options_paper import (
@@ -164,6 +165,7 @@ def main() -> int:
     parser.add_argument("--queue-order-candidates", action="store_true", help="Queue next-session mock candidates instead of same-close fills")
     parser.add_argument("--execute-pending-candidates", action="store_true", help="Fill previously queued candidates at the latest bar open when a later bar is available")
     parser.add_argument("--require-live-data", action="store_true", help="Abort candidate execution/queueing if any symbol falls back to synthetic data")
+    parser.add_argument("--spy-relative-exit-trail", type=float, default=None, help="SPY-relative exit trail threshold (e.g. 0.03 for -3%%). Research-only.")
     parser.add_argument("--fetch-options", action="store_true", help="Fetch and cache yfinance option chains before screening paper options")
     parser.add_argument("--queue-option-candidates", action="store_true", help="Queue top guarded paper option candidates; no fill until --execute-paper-option-candidates")
     parser.add_argument("--execute-paper-option-candidates", action="store_true", help="Execute queued paper option candidates into the paper-only options ledger")
@@ -198,6 +200,12 @@ def main() -> int:
         backtests.append(run_signal_backtest(symbol, bars, generate_tsmom_signal, min_history=140))
         backtests.append(moving_average_cross_backtest(symbol, bars))
 
+    # Ensure benchmark bars are available for the SPY-relative exit governor path.
+    spy_bars = bars_by_symbol.get("SPY")
+    if spy_bars is None:
+        spy_bars, spy_source = fetch_prices("SPY", days=args.days, prefer_network=args.network)
+        sources["SPY:benchmark_guard"] = spy_source
+
     if (args.queue_order_candidates or args.execute_pending_candidates) and args.require_live_data:
         synthetic_symbols = sorted(sym for sym, source in sources.items() if _source_is_synthetic(source))
         if synthetic_symbols:
@@ -215,6 +223,17 @@ def main() -> int:
             candidate = _candidate_from_signal(sig, today, equity)
             if candidate:
                 queued_candidates.append(candidate)
+        if args.spy_relative_exit_trail is not None:
+            exit_candidates = evaluate_spy_relative_exits(
+                portfolio,
+                prices,
+                spy_bars,
+                LEDGER_PATH,
+                trail_threshold=-args.spy_relative_exit_trail,
+                signal_date=today,
+            )
+            if exit_candidates:
+                queued_candidates.extend(exit_candidates)
         if queued_candidates:
             save_order_candidates(_dedupe_candidates(load_order_candidates() + queued_candidates))
 
@@ -251,7 +270,6 @@ def main() -> int:
             save_option_paper_candidates(_dedupe_option_candidates(load_option_paper_candidates() + queued_option_candidates))
     options_research = {"covered_calls": covered_calls, "cash_secured_puts": cash_secured_puts, "warnings": option_warnings, "option_decisions": option_decisions, "queued_option_candidates": queued_option_candidates}
     # SPY buy/hold benchmark aligned to first ensemble ledger fill date
-    from market_lab.config import LEDGER_PATH
     bm_start = _earliest_ledger_date(LEDGER_PATH)
     spy_benchmark = compute_spy_benchmark(
         starting_cash=RISK.starting_cash,
