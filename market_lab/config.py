@@ -18,6 +18,9 @@ OPTIONS_PAPER_LEDGER_PATH = OPTIONS_DIR / "paper_options_ledger.jsonl"
 OPTIONS_PAPER_CANDIDATES_PATH = OPTIONS_DIR / "paper_options_candidates.jsonl"
 LEDGER_PATH = DATA_DIR / "mock_ledger.jsonl"
 
+SOURCE_THESIS_DIR = DATA_DIR / "source_thesis"
+SOURCE_THESIS_REPORT_DIR = SOURCE_THESIS_DIR / "reports"
+
 VT_TREND_DIR = DATA_DIR / "vt_trend"
 VT_TREND_STATE = VT_TREND_DIR / "portfolio_state.json"
 VT_TREND_LEDGER = VT_TREND_DIR / "ledger.jsonl"
@@ -81,5 +84,20 @@ RISK = RiskConfig()
 OPTIONS_RISK = OptionsRiskConfig()
 
 def ensure_dirs() -> None:
-    for path in (DATA_DIR, PRICE_DIR, SYNTHETIC_PRICE_DIR, REPORT_DIR, FACTOR_DIR, EVIDENCE_DIR, OPTIONS_DIR, OPTIONS_CHAIN_DIR, VT_TREND_DIR, VT_TREND_REPORT_DIR, TSMOM_DIR, TSMOM_REPORT_DIR):
+    for path in (
+        DATA_DIR,
+        PRICE_DIR,
+        SYNTHETIC_PRICE_DIR,
+        REPORT_DIR,
+        FACTOR_DIR,
+        EVIDENCE_DIR,
+        OPTIONS_DIR,
+        OPTIONS_CHAIN_DIR,
+        VT_TREND_DIR,
+        VT_TREND_REPORT_DIR,
+        TSMOM_DIR,
+        TSMOM_REPORT_DIR,
+        SOURCE_THESIS_DIR,
+        SOURCE_THESIS_REPORT_DIR,
+    ):
         path.mkdir(parents=True, exist_ok=True)
