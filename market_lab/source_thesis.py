@@ -233,6 +233,14 @@ def _strip_quote(raw_line: str) -> str | None:
     if match:
         return match.group(1).strip()
 
+    # Plain claim-style line without Markdown quote marker (common in structured captures).
+    # Example: "Small quadcopter drone: Requires 8–12 bearings."
+    match = re.match(r"^\s*(?:-\s*)?(?:\d+\)\s*)?(.+?:\s*.+)$", raw_line)
+    if match:
+        candidate = match.group(1).strip()
+        if len(candidate) >= 15 and any(ch.isdigit() for ch in candidate):
+            return candidate
+
     return None
 
 

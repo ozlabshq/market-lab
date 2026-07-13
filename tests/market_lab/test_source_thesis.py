@@ -41,6 +41,8 @@ class SourceThesisTests(unittest.TestCase):
 
         self.assertIn("~300x growth in the robot bearings market", claim_blob)
         self.assertIn("OpenAI listed precision bearings as 1 of 6 critical components", claim_blob)
+        self.assertIn("Small quadcopter drone: Requires 8–12 bearings.", claim_blob)
+        self.assertIn("Humanoid robot: Requires 70 or more bearings.", claim_blob)
         self.assertIn("top 6 global manufacturers control over 50%", claim_blob)
         self.assertIn("Roughly 40% of the overall market goes to industrial equipment OEMs, 30% to automotive, and 30 to distribution channels", claim_blob)
 
@@ -94,6 +96,8 @@ class SourceThesisTests(unittest.TestCase):
                 "OpenAI listed precision bearings as 1 of 6 critical components": "OpenAI listed precision bearings as 2 of 6 critical components",
                 "control over 50%": "control over 40%",
                 "Roughly 40% of the overall market goes to industrial equipment OEMs, 30% to automotive, and 30 to distribution channels": "Roughly 30% of the overall market goes to industrial equipment OEMs, 30% to automotive, and 40 to distribution channels",
+                "Small quadcopter drone: Requires 8–12 bearings.": "Small quadcopter drone: Requires 1 bearing.",
+                "Humanoid robot: Requires 70 or more bearings.": "Humanoid robot: Requires 7 or more bearings.",
             }
             for src, dst in replacements.items():
                 text = text.replace(src, dst)
@@ -111,6 +115,10 @@ class SourceThesisTests(unittest.TestCase):
             self.assertIn("control over 40%", claim_blob)
             self.assertNotIn("Roughly 40% of the overall market goes to industrial equipment OEMs, 30% to automotive, and 30 to distribution channels", claim_blob)
             self.assertIn("Roughly 30% of the overall market goes to industrial equipment OEMs, 30% to automotive, and 40 to distribution channels", claim_blob)
+            self.assertNotIn("Small quadcopter drone: Requires 8–12 bearings.", claim_blob)
+            self.assertIn("Small quadcopter drone: Requires 1 bearing.", claim_blob)
+            self.assertNotIn("Humanoid robot: Requires 70 or more bearings.", claim_blob)
+            self.assertIn("Humanoid robot: Requires 7 or more bearings.", claim_blob)
 
     def test_cli_writes_json_markdown_and_run_log(self):
         with tempfile.TemporaryDirectory() as td:
