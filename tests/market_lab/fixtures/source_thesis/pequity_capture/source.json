@@ -1,0 +1,16 @@
+{
+  "tweet": {
+    "url": "https://x.com/pequityresearch/status/2076492034064425454",
+    "id": "2076492034064425454",
+    "text": "Morgan Stanley: Bearings\n\nThe Big Picture: Bearings as a Core Robotics Play\n\n> Architecture-Agnostic Growth: Bearings offer a diversified way to invest in the robotics sector because they are required regardless of a robot's ultimate design or form factor.  \n\n> Massive Market Expansion: Morgan Stanley forecasts a massive ~300x growth in the robot bearings market through the year 2050.  \n\n> Low Risk of Obsolescence: Bearings face very low substitution, in-sourcing, or obsolescence risks— you simply cannot design moving machines around them.  \n\n> OpenAI Endorsement: In a recent Request for Proposal (RFP) for U.S.-based hardware manufacturing capacity, OpenAI listed precision bearings as 1 of 6 critical components in its robotics category. \n\nContent Scales with Robot Complexity\n\n> Bearings 101: Every single motor in a robot requires at least one or more bearings to reduce friction and support rotating parts.  \n\n> Degrees of Freedom (DoF): As robots get more complex, the number of bearings multiplies. \n\nSmall quadcopter drone: Requires 8–12 bearings.  \n\nHumanoid robot: Requires 70 or more bearings.  \n\n> Pricing Variability: Depending on the specific use-case, individual bearings can range from under $1 to as much as $100\n\nGlobal Bearings Market Dynamics\n\n> Consolidated Supply: The top 6 global manufacturers control over 50% of the global roller market, with Chinese manufacturers making up about 25%.  \n\n> Current Demand Split: Roughly 40% of the overall market goes to industrial equipment OEMs, 30% to automotive, and 30 to distribution channels",
+    "created_at": "Mon Jul 13 02:20:54 +0000 2026",
+    "user": {
+      "name": "P Equity Research",
+      "screen_name": "pequityresearch"
+    },
+    "author": {
+      "name": "P Equity Research",
+      "screen_name": "pequityresearch"
+    }
+  }
+}
