@@ -292,7 +292,8 @@ def replay_status(
     ok, reason = verify_event_chain(rows, legacy_bytes=legacy_bytes)
     if not ok:
         raise ValueError(f"invalid agency event chain: {reason}")
-    status = "CREATED"
+    status: str | None = None
+    matched = False
     blockers: list[str] = []
     next_actions: list[str] = []
     sequence = 0
@@ -302,6 +303,7 @@ def replay_status(
             continue
         if TypedID.from_dict(row["agency_case_id"]) != agency_case_id:
             continue
+        matched = True
         sequence = int(row["sequence_number"])
         head = str(row["event_hash"])
         payload = row["event_payload"]
@@ -317,7 +319,8 @@ def replay_status(
             action = payload.get("action_type")
             if isinstance(action, str) and action:
                 next_actions.append(action)
-        projected = payload.get("projected_status")
-        if isinstance(projected, str) and projected:
-            status = projected
+    if not matched:
+        raise ValueError(f"no-events for agency_case_id: {agency_case_id.local_id}")
+    if status is None:
+        raise ValueError(f"no status events for agency_case_id: {agency_case_id.local_id}")
     return ReplayStatus(agency_case_id, status, sequence, head, tuple(blockers), tuple(next_actions))

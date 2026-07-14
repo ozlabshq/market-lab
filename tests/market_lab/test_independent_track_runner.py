@@ -1,11 +1,9 @@
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-import json
-
-from market_lab.config import VT_TREND_DIR, TSMOM_DIR
 
 
 # Assumes tests run from repo root
@@ -16,6 +14,17 @@ TSMOM_SCRIPT = REPO_ROOT / "scripts" / "market_lab_tsmom.py"
 
 
 class IndependentTrackRunnerSafetyTests(unittest.TestCase):
+    def run_runner(self, data_dir: Path, *args: str) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["MARKET_LAB_DATA_DIR"] = str(data_dir)
+        return subprocess.run(
+            [sys.executable, str(RUNNER), *args],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+            env=env,
+        )
+
     def test_runner_script_exists(self):
         self.assertTrue(RUNNER.exists(), f"Runner script not found: {RUNNER}")
 
@@ -46,12 +55,8 @@ class IndependentTrackRunnerSafetyTests(unittest.TestCase):
         self.assertNotIn("urllib.request.urlopen", text)
 
     def test_runner_help_prints(self):
-        result = subprocess.run(
-            [sys.executable, str(RUNNER), "--help"],
-            capture_output=True,
-            text=True,
-            cwd=REPO_ROOT,
-        )
+        with tempfile.TemporaryDirectory() as td:
+            result = self.run_runner(Path(td), "--help")
         self.assertEqual(result.returncode, 0, f"stderr: {result.stderr}")
         self.assertIn("research", result.stdout.lower())
         self.assertIn("mock", result.stdout.lower())
@@ -60,23 +65,15 @@ class IndependentTrackRunnerSafetyTests(unittest.TestCase):
 
     def test_runner_single_track_select(self):
         """--track vt_trend should mention only that track in summary."""
-        result = subprocess.run(
-            [sys.executable, str(RUNNER), "--track", "vt_trend"],
-            capture_output=True,
-            text=True,
-            cwd=REPO_ROOT,
-        )
+        with tempfile.TemporaryDirectory() as td:
+            result = self.run_runner(Path(td), "--track", "vt_trend")
         self.assertEqual(result.returncode, 0, f"stderr: {result.stderr}")
         self.assertIn("vt_trend", result.stdout)
 
     def test_runner_both_tracks_default(self):
         """Default run mentions both tracks and does not crash."""
-        result = subprocess.run(
-            [sys.executable, str(RUNNER)],
-            capture_output=True,
-            text=True,
-            cwd=REPO_ROOT,
-        )
+        with tempfile.TemporaryDirectory() as td:
+            result = self.run_runner(Path(td))
         self.assertEqual(result.returncode, 0, f"stderr: {result.stderr}")
         self.assertIn("vt_trend", result.stdout)
         self.assertIn("tsmom", result.stdout)
@@ -84,37 +81,33 @@ class IndependentTrackRunnerSafetyTests(unittest.TestCase):
 
     def test_runner_vt_trend_produced_report(self):
         """After running, vt_trend latest report exists or is updated."""
-        result = subprocess.run(
-            [sys.executable, str(RUNNER)],
-            capture_output=True,
-            text=True,
-            cwd=REPO_ROOT,
-        )
-        self.assertEqual(result.returncode, 0, f"stderr: {result.stderr}")
-        latest = VT_TREND_DIR / "reports" / "latest.md"
-        self.assertTrue(latest.exists() or (VT_TREND_DIR / "reports").exists(),
-                        "Expected vt_trend report directory to exist after run")
-        if latest.exists():
-            content = latest.read_text()
-            self.assertIn("vt_trend", content)
-            self.assertIn("Research", content)
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            result = self.run_runner(data_dir)
+            self.assertEqual(result.returncode, 0, f"stderr: {result.stderr}")
+            latest = data_dir / "vt_trend" / "reports" / "latest.md"
+            report_dir = data_dir / "vt_trend" / "reports"
+            self.assertTrue(latest.exists() or report_dir.exists(),
+                            "Expected vt_trend report directory to exist after run")
+            if latest.exists():
+                content = latest.read_text()
+                self.assertIn("vt_trend", content)
+                self.assertIn("Research", content)
 
     def test_runner_tsmom_produced_report(self):
         """After running, TSMOM latest report exists or is updated."""
-        result = subprocess.run(
-            [sys.executable, str(RUNNER)],
-            capture_output=True,
-            text=True,
-            cwd=REPO_ROOT,
-        )
-        self.assertEqual(result.returncode, 0, f"stderr: {result.stderr}")
-        latest = TSMOM_DIR / "reports" / "latest.md"
-        self.assertTrue(latest.exists() or (TSMOM_DIR / "reports").exists(),
-                        "Expected tsmom report directory to exist after run")
-        if latest.exists():
-            content = latest.read_text()
-            self.assertIn("TSMOM", content)
-            self.assertIn("Research", content)
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            result = self.run_runner(data_dir)
+            self.assertEqual(result.returncode, 0, f"stderr: {result.stderr}")
+            latest = data_dir / "tsmom" / "reports" / "latest.md"
+            report_dir = data_dir / "tsmom" / "reports"
+            self.assertTrue(latest.exists() or report_dir.exists(),
+                            "Expected tsmom report directory to exist after run")
+            if latest.exists():
+                content = latest.read_text()
+                self.assertIn("TSMOM", content)
+                self.assertIn("Research", content)
 
     def test_runner_no_main_portfolio_mutation(self):
         """Runner should not touch the main mock portfolio state file."""

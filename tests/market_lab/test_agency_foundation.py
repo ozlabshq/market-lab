@@ -213,6 +213,18 @@ def test_status_replay_and_case_projection_are_deterministic() -> None:
     assert manifest.to_dict()["status_projection_hash"] == manifest.status_projection_hash
 
 
+def test_status_replay_uses_event_type_over_projected_payload() -> None:
+    first = event(1, "case.created", payload={"projected_status": "FINALIZED"})
+    status = replay_status([first], tid("agency_case", "case-1"))
+    assert status.status == "CREATED"
+
+
+def test_status_replay_rejects_case_with_no_events() -> None:
+    first = event(1, "case.created")
+    with pytest.raises(ValueError, match="no-events"):
+        replay_status([first], tid("agency_case", "case-2"))
+
+
 def test_exact_source_manifest_passes_and_drift_blocks(tmp_path: Path) -> None:
     ok, reasons, digests = verify_source_manifest()
     assert ok, reasons
