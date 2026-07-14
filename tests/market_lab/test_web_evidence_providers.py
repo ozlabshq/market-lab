@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from ddgs.exceptions import DDGSException, TimeoutException
+from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException
 
 from market_lab.web_evidence import SearchRequest
 from market_lab.web_evidence_providers import DDGSProvider, OptionalProvider, build_optional_registry
@@ -56,6 +56,24 @@ class _FailingDDGS:
         raise self.exc
 
 
+class _RowsDDGS:
+    def __init__(self, rows) -> None:
+        self.rows = rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return None
+
+    def text(self, *args, **kwargs):
+        yield from self.rows
+
+
+class _DDGSSubclass(DDGSException):
+    pass
+
+
 def test_ddgs_clean_no_results_has_distinct_typed_status() -> None:
     with patch("ddgs.DDGS", lambda *args, **kwargs: _FailingDDGS(DDGSException("No results found."))):
         response = DDGSProvider().search(_request())
@@ -63,6 +81,52 @@ def test_ddgs_clean_no_results_has_distinct_typed_status() -> None:
     assert response.status == "zero_results"
     assert response.typed_error == "zero_results"
     assert response.result_count == 0
+
+
+def test_ddgs_no_results_requires_exact_exception_args_and_class() -> None:
+    cases = [
+        DDGSException(" No results found. "),
+        DDGSException("No results found.", "extra"),
+        _DDGSSubclass("No results found."),
+    ]
+    for exc in cases:
+        with patch("ddgs.DDGS", lambda *args, **kwargs: _FailingDDGS(exc)):
+            response = DDGSProvider().search(_request())
+
+        assert response.status == "transport_error"
+        assert response.typed_error != "zero_results"
+
+
+def test_ddgs_rate_limit_does_not_become_zero_results() -> None:
+    with patch("ddgs.DDGS", lambda *args, **kwargs: _FailingDDGS(RatelimitException("No results found."))):
+        response = DDGSProvider().search(_request())
+
+    assert response.status == "rate_limited"
+    assert response.typed_error == "No results found."
+
+
+def test_ddgs_empty_iterator_is_zero_results() -> None:
+    with patch("ddgs.DDGS", lambda *args, **kwargs: _RowsDDGS([])):
+        response = DDGSProvider().search(_request())
+
+    assert response.status == "zero_results"
+    assert response.typed_error == "zero_results"
+
+
+def test_ddgs_nonempty_malformed_iterator_fails_closed() -> None:
+    malformed_cases = [
+        [object()],
+        [{"title": "missing url", "body": "snippet"}],
+        [{"href": "   ", "title": "blank href", "body": "snippet"}],
+        [{"url": "\t\n", "title": "blank url", "body": "snippet"}],
+        [{"href": "https://example.com", "title": "valid", "body": "snippet"}, {"title": "missing url"}],
+    ]
+    for rows in malformed_cases:
+        with patch("ddgs.DDGS", lambda *args, **kwargs: _RowsDDGS(rows)):
+            response = DDGSProvider().search(_request())
+
+        assert response.status == "transport_error"
+        assert response.typed_error == "malformed_results"
 
 
 def test_ddgs_timeout_remains_transport_error() -> None:

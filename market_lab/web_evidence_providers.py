@@ -10,7 +10,7 @@ import socket
 import ssl
 import time
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote_plus, urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -399,6 +399,7 @@ class DDGSProvider(ProviderBase):
 
             hits: list[SearchHit] = []
             raw_rows: list[dict[str, Any]] = []
+            malformed_rows = 0
             with DDGS(timeout=request.timeout_seconds) as client:
                 for row in client.text(
                     request.exact_query,
@@ -406,12 +407,17 @@ class DDGSProvider(ProviderBase):
                     region="us-en" if request.country.upper() == "US" else "wt-wt",
                     safesearch="moderate",
                 ):
+                    if not isinstance(row, Mapping):
+                        malformed_rows += 1
+                        raw_rows.append({"malformed_row_type": type(row).__name__})
+                        continue
                     raw = dict(row)
                     raw_rows.append(raw)
-                    href = str(raw.get("href") or raw.get("url") or "")
+                    href = str(raw.get("href") or raw.get("url") or "").strip()
                     title = re.sub(r"\s+", " ", str(raw.get("title") or "")).strip()
                     snippet = re.sub(r"\s+", " ", str(raw.get("body") or "")).strip()
                     if not href:
+                        malformed_rows += 1
                         continue
                     idx = len(hits) + 1
                     if idx > request.max_results:
@@ -430,8 +436,13 @@ class DDGSProvider(ProviderBase):
                         )
                     )
             raw_payload = str(raw_rows)
-            status = "success" if hits else "zero_results"
-            typed_error = "" if hits else "zero_results"
+            if malformed_rows:
+                hits = []
+                status = "transport_error"
+                typed_error = "malformed_results"
+            else:
+                status = "success" if hits else "zero_results"
+                typed_error = "" if hits else "zero_results"
             return SearchResponse(
                 request_id=request.request_id,
                 query_id=request.query_id,
@@ -477,7 +488,7 @@ class DDGSProvider(ProviderBase):
                 typed_error=str(exc) or "timeout",
             )
         except DDGSException as exc:
-            clean_zero_results = type(exc) is DDGSException and str(exc).strip() == "No results found."
+            clean_zero_results = type(exc) is DDGSException and exc.args == ("No results found.",)
             return SearchResponse(
                 request_id=request.request_id,
                 query_id=request.query_id,

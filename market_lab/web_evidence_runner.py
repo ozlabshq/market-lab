@@ -380,6 +380,27 @@ def _flatten_search_result_rows(rows: list[dict[str, Any]]) -> list[dict[str, An
     return flattened
 
 
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def _zero_result_audit_matches(audit: dict[str, Any], *, claim_id: str, route: dict[str, Any]) -> bool:
+    return (
+        audit.get("event_type") == "claim_search_zero_results"
+        and str(audit.get("claim_id") or "") == claim_id
+        and _string_list(audit.get("claim_ids")) == [claim_id]
+        and _string_list(route.get("claim_ids")) == [claim_id]
+        and str(audit.get("query_id") or "") == str(route.get("query_id") or "")
+        and str(audit.get("lane") or "") == str(route.get("lane") or "")
+        and str(audit.get("provider_id") or "") == str(route.get("provider_id") or "")
+        and str(audit.get("status") or "") == str(route.get("status") or "")
+        and str(audit.get("query_strategy") or "") == str(route.get("query_strategy") or "")
+        and audit.get("fallback_for_query_id") == route.get("fallback_for_query_id")
+    )
+
+
 def _frozen_provider_health_rows(profile: str) -> list[dict[str, Any]]:
     now = utcnow()
     rows = [
@@ -683,7 +704,8 @@ def collect_for_claims(
 
         for search_request in _build_claim_queries(claim, i, run_id, budget):
             query_already_done = search_request.query_id in existing_queries
-            if append_query_event_once(run_dir, asdict(search_request)):
+            query_payload = {**asdict(search_request), "provider_id": ddgs.provider_id}
+            if append_query_event_once(run_dir, query_payload):
                 existing_queries.add(search_request.query_id)
             plan.append(
                 {
@@ -707,7 +729,8 @@ def collect_for_claims(
             if original_zero_results and search_request.lane in _REQUIRED_DISCOVERY_LANES:
                 fallback_request = _build_broadened_fallback(search_request, claim_text)
                 fallback_already_done = fallback_request.query_id in existing_queries
-                if append_query_event_once(run_dir, asdict(fallback_request)):
+                fallback_payload = {**asdict(fallback_request), "provider_id": ddgs.provider_id}
+                if append_query_event_once(run_dir, fallback_payload):
                     existing_queries.add(fallback_request.query_id)
                 plan.append(
                     {
@@ -1349,13 +1372,13 @@ def verify_run(
                 if str(cid) in planned:
                     planned[str(cid)][lane].append(row)
         audit_rows = read_jsonl(audit_log) if audit_log.exists() else []
-        audited_zero_query_ids = {
-            str(row.get("query_id"))
+        zero_audit_rows = [
+            row
             for row in audit_rows
-            if row.get("event_type") == "claim_search_zero_results"
-            and row.get("status") == "zero_results"
+            if isinstance(row, dict)
+            and row.get("event_type") == "claim_search_zero_results"
             and row.get("query_id")
-        }
+        ]
         blockers: list[dict[str, str]] = []
         accepted_zero_result_routes: list[dict[str, str]] = []
         for cid, lanes in sorted(planned.items()):
@@ -1364,16 +1387,52 @@ def verify_run(
                 if not lane_queries:
                     blockers.append({"type": f"{lane}_missing", "claim_id": cid, "lane": lane})
                     continue
+                if not any(row.get("query_strategy", "exact_claim") != "broadened_fallback" for row in lane_queries):
+                    blockers.append({"type": f"{lane}_missing", "claim_id": cid, "lane": lane})
+                    continue
                 clean_zero_query_ids: set[str] = set()
                 positive_query_ids: set[str] = set()
                 for query in sorted(lane_queries, key=lambda row: str(row.get("query_id") or "")):
                     query_id = str(query.get("query_id") or "")
+                    if _string_list(query.get("claim_ids")) != [cid]:
+                        blockers.append(
+                            {
+                                "type": f"{lane}_route_claim_mismatch",
+                                "claim_id": cid,
+                                "lane": lane,
+                                "query_id": query_id,
+                            }
+                        )
+                        continue
                     results = executed_by_query.get(query_id, [])
                     if not results:
                         blockers.append({"type": f"{lane}_not_executed", "claim_id": cid, "lane": lane, "query_id": query_id})
                         continue
+                    if len(results) != 1:
+                        blockers.append(
+                            {
+                                "type": f"{lane}_duplicate_execution",
+                                "claim_id": cid,
+                                "lane": lane,
+                                "query_id": query_id,
+                            }
+                        )
+                        continue
                     for result in results:
                         enriched = {**query_by_id.get(query_id, {}), **result}
+                        expected_provider_id = str(query.get("provider_id") or "")
+                        if expected_provider_id and str(result.get("provider_id") or "") != expected_provider_id:
+                            blockers.append(
+                                {
+                                    "type": f"{lane}_provider_mismatch",
+                                    "claim_id": cid,
+                                    "lane": lane,
+                                    "query_id": query_id,
+                                    "provider_id": str(result.get("provider_id") or ""),
+                                    "expected_provider_id": expected_provider_id,
+                                }
+                            )
+                            continue
                         status = str(enriched.get("status") or "")
                         typed_error = str(enriched.get("typed_error") or "")
                         try:
@@ -1381,7 +1440,13 @@ def verify_run(
                         except (TypeError, ValueError):
                             result_count = 0
                         if status == "zero_results" and result_count == 0:
-                            if query_id not in audited_zero_query_ids:
+                            candidate_audits = [
+                                row for row in zero_audit_rows if str(row.get("query_id") or "") == query_id
+                            ]
+                            matching_audits = [
+                                row for row in candidate_audits if _zero_result_audit_matches(row, claim_id=cid, route=enriched)
+                            ]
+                            if len(candidate_audits) != 1 or len(matching_audits) != 1:
                                 blockers.append(
                                     {
                                         "type": f"{lane}_zero_results_unaudited",
@@ -1423,7 +1488,8 @@ def verify_run(
                         continue
                     fallback_queries = [
                         row
-                        for row in lane_queries
+                        for row in query_rows
+                        if isinstance(row, dict)
                         if row.get("query_strategy") == "broadened_fallback" and row.get("fallback_for_query_id") == query_id
                     ]
                     if not fallback_queries:
@@ -1436,7 +1502,33 @@ def verify_run(
                             }
                         )
                         continue
+                    if len(fallback_queries) != 1:
+                        blockers.append(
+                            {
+                                "type": f"{lane}_zero_results_duplicate_fallback",
+                                "claim_id": cid,
+                                "lane": lane,
+                                "query_id": query_id,
+                            }
+                        )
+                        continue
                     for fallback in fallback_queries:
+                        fallback_claim_ids = _string_list(fallback.get("claim_ids"))
+                        if (
+                            str(fallback.get("lane") or "") != lane
+                            or fallback_claim_ids != [cid]
+                            or str(fallback.get("query_strategy") or "") != "broadened_fallback"
+                            or str(fallback.get("fallback_for_query_id") or "") != query_id
+                        ):
+                            blockers.append(
+                                {
+                                    "type": f"{lane}_zero_results_mislinked_fallback",
+                                    "claim_id": cid,
+                                    "lane": lane,
+                                    "query_id": query_id,
+                                }
+                            )
+                            continue
                         fallback_id = str(fallback.get("query_id") or "")
                         if fallback_id in clean_zero_query_ids:
                             accepted_zero_result_routes.append(

@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from market_lab.web_evidence import FetchResponse, ProviderHealth, SearchHit, SearchResponse, utcnow
 from market_lab.web_evidence_runner import collect_for_claims, verify_run
 from market_lab.web_evidence_store import append_audit_chain, read_jsonl
@@ -153,6 +155,87 @@ def _rewrite_search_row(tmp_path: Path, lane: str, mutate) -> str:
     return query_id
 
 
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.write_text("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n", encoding="utf-8")
+
+
+def _collect_broadened_zero_run(tmp_path: Path) -> dict:
+    providers = [_CleanZeroDDGS(), _Direct()]
+    with patch("market_lab.web_evidence_runner.build_registry", lambda profile, include_optional: providers):
+        collect_for_claims(tmp_path, [{"claim_id": "claim-1", "text": "Example Corp revenue increased"}], mode="live", run_id="run")
+    checks = verify_run(tmp_path, require_counterevidence_coverage=True, require_audit_chain=True)
+    assert checks["ok"], checks
+    query_rows = read_jsonl(tmp_path / "web_evidence" / "queries.jsonl")
+    original = next(
+        row
+        for row in query_rows
+        if row.get("lane") == "counterevidence" and row.get("query_strategy", "exact_claim") != "broadened_fallback"
+    )
+    fallback = next(
+        row
+        for row in query_rows
+        if row.get("query_strategy") == "broadened_fallback"
+        and row.get("fallback_for_query_id") == original["query_id"]
+    )
+    return {"original": original, "fallback": fallback}
+
+
+def _mutate_zero_audit(tmp_path: Path, query_id: str, mutate) -> None:
+    path = tmp_path / "audit_log.jsonl"
+    rows = read_jsonl(path)
+    changed = False
+    rewritten = []
+    for row in rows:
+        if not changed and row.get("event_type") == "claim_search_zero_results" and row.get("query_id") == query_id:
+            changed = True
+            replacement = mutate(dict(row))
+            if replacement is not None:
+                rewritten.append(replacement)
+        else:
+            rewritten.append(row)
+    assert changed
+    _write_jsonl(path, rewritten)
+
+
+def _mutate_query(tmp_path: Path, query_id: str, mutate) -> None:
+    path = tmp_path / "web_evidence" / "queries.jsonl"
+    rows = read_jsonl(path)
+    rewritten = []
+    changed = False
+    for row in rows:
+        if row.get("query_id") == query_id:
+            changed = True
+            replacement = mutate(dict(row))
+            if replacement is not None:
+                rewritten.append(replacement)
+        else:
+            rewritten.append(row)
+    assert changed
+    _write_jsonl(path, rewritten)
+
+
+def _mutate_flat_search_result(tmp_path: Path, query_id: str, mutate) -> None:
+    path = tmp_path / "web_evidence" / "search_results.jsonl"
+    rows = read_jsonl(path)
+    rewritten = []
+    changed = False
+    for row in rows:
+        if row.get("query_id") == query_id:
+            changed = True
+            replacement = mutate(dict(row))
+            if replacement is not None:
+                rewritten.append(replacement)
+        else:
+            rewritten.append(row)
+    assert changed
+    _write_jsonl(path, rewritten)
+
+
+def _assert_blocker(checks: dict, blocker_type: str, **fields) -> None:
+    expected = {"type": blocker_type, **fields}
+    assert expected in checks["coverage_blockers"]
+
+
 def test_counterevidence_gate_requires_executed_search_result_for_planned_query(tmp_path: Path) -> None:
     with patch("market_lab.web_evidence_runner.build_registry", lambda profile, include_optional: _providers()):
         collect_for_claims(tmp_path, [{"claim_id": "claim-1", "text": "Example Corp revenue increased"}], mode="live", run_id="run")
@@ -234,13 +317,21 @@ def test_counterevidence_clean_zero_without_fallback_fails_closed(tmp_path: Path
             "provider_id": "ddgs",
             "status": "zero_results",
             "typed_error": "zero_results",
+            "query_strategy": "exact_claim",
+            "fallback_for_query_id": None,
         },
     )
 
     checks = verify_run(tmp_path, require_counterevidence_coverage=True)
 
     assert not checks["ok"]
-    assert any(row["type"] == "counterevidence_zero_results_without_fallback" for row in checks["coverage_blockers"])
+    _assert_blocker(
+        checks,
+        "counterevidence_zero_results_without_fallback",
+        claim_id="claim-1",
+        lane="counterevidence",
+        query_id=query_id,
+    )
 
 
 def test_counterevidence_gate_accepts_audited_broadened_zero_results(tmp_path: Path) -> None:
@@ -258,6 +349,276 @@ def test_counterevidence_gate_accepts_audited_broadened_zero_results(tmp_path: P
     assert all(row.get("fallback_for_query_id") for row in fallback_rows)
     assert len([row for row in audit_rows if row.get("event_type") == "claim_search_zero_results"]) == 4
     assert len(checks["accepted_zero_result_routes"]) == 2
+
+
+def test_counterevidence_gate_accepts_idempotent_broadened_zero_replay(tmp_path: Path) -> None:
+    providers = [_CleanZeroDDGS(), _Direct()]
+    with patch("market_lab.web_evidence_runner.build_registry", lambda profile, include_optional: providers):
+        claim = [{"claim_id": "claim-1", "text": "Example Corp revenue increased"}]
+        collect_for_claims(tmp_path, claim, mode="live", run_id="run")
+        collect_for_claims(tmp_path, claim, mode="live", run_id="run")
+
+    checks = verify_run(tmp_path, require_counterevidence_coverage=True, require_audit_chain=True)
+    fallback_rows = [
+        row
+        for row in read_jsonl(tmp_path / "web_evidence" / "queries.jsonl")
+        if row.get("query_strategy") == "broadened_fallback"
+    ]
+
+    assert checks["ok"], checks
+    assert len(fallback_rows) == 2
+    assert len(checks["accepted_zero_result_routes"]) == 2
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda row: None,
+        lambda row: {**row, "claim_id": "claim-2"},
+        lambda row: {**row, "claim_ids": ["claim-2"]},
+        lambda row: {**row, "lane": "freshness_supersession"},
+        lambda row: {**row, "provider_id": "other"},
+        lambda row: {**row, "status": "transport_error"},
+        lambda row: {**row, "query_strategy": "broadened_fallback"},
+        lambda row: {**row, "fallback_for_query_id": "other-query"},
+        lambda row: {**row, "query_id": "other-query"},
+    ],
+)
+def test_counterevidence_gate_rejects_zero_audit_route_tampering(tmp_path: Path, mutate) -> None:
+    route = _collect_broadened_zero_run(tmp_path)
+    _mutate_zero_audit(tmp_path, route["original"]["query_id"], mutate)
+
+    checks = verify_run(tmp_path, require_counterevidence_coverage=True)
+
+    assert not checks["ok"]
+    _assert_blocker(
+        checks,
+        "counterevidence_zero_results_unaudited",
+        claim_id="claim-1",
+        lane="counterevidence",
+        query_id=route["original"]["query_id"],
+        provider_id="ddgs",
+    )
+
+
+def test_counterevidence_gate_rejects_duplicate_zero_audit_route(tmp_path: Path) -> None:
+    route = _collect_broadened_zero_run(tmp_path)
+    path = tmp_path / "audit_log.jsonl"
+    rows = read_jsonl(path)
+    duplicate = next(
+        row
+        for row in rows
+        if row.get("event_type") == "claim_search_zero_results" and row.get("query_id") == route["original"]["query_id"]
+    )
+    rows.append(dict(duplicate))
+    _write_jsonl(path, rows)
+
+    checks = verify_run(tmp_path, require_counterevidence_coverage=True)
+
+    assert not checks["ok"]
+    _assert_blocker(
+        checks,
+        "counterevidence_zero_results_unaudited",
+        claim_id="claim-1",
+        lane="counterevidence",
+        query_id=route["original"]["query_id"],
+        provider_id="ddgs",
+    )
+
+
+def test_counterevidence_gate_rejects_duplicate_zero_execution_reusing_one_audit(tmp_path: Path) -> None:
+    route = _collect_broadened_zero_run(tmp_path)
+    path = tmp_path / "web_evidence" / "search_results.jsonl"
+    rows = read_jsonl(path)
+    duplicate = next(row for row in rows if row.get("query_id") == route["original"]["query_id"])
+    rows.append(dict(duplicate))
+    _write_jsonl(path, rows)
+
+    checks = verify_run(tmp_path, require_counterevidence_coverage=True)
+
+    assert not checks["ok"]
+    _assert_blocker(
+        checks,
+        "counterevidence_duplicate_execution",
+        claim_id="claim-1",
+        lane="counterevidence",
+        query_id=route["original"]["query_id"],
+    )
+
+
+def test_counterevidence_gate_rejects_cross_claim_query_and_audit_tampering(tmp_path: Path) -> None:
+    route = _collect_broadened_zero_run(tmp_path)
+    _mutate_query(tmp_path, route["original"]["query_id"], lambda row: {**row, "claim_ids": ["claim-2"]})
+    _mutate_zero_audit(
+        tmp_path,
+        route["original"]["query_id"],
+        lambda row: {**row, "claim_id": "claim-2", "claim_ids": ["claim-2"]},
+    )
+
+    checks = verify_run(tmp_path, require_counterevidence_coverage=True)
+
+    assert not checks["ok"]
+    _assert_blocker(checks, "counterevidence_missing", claim_id="claim-1", lane="counterevidence")
+
+
+def test_counterevidence_gate_rejects_multi_claim_query_route_identity(tmp_path: Path) -> None:
+    route = _collect_broadened_zero_run(tmp_path)
+    _mutate_query(tmp_path, route["original"]["query_id"], lambda row: {**row, "claim_ids": ["claim-1", "claim-2"]})
+
+    checks = verify_run(tmp_path, require_counterevidence_coverage=True)
+
+    assert not checks["ok"]
+    _assert_blocker(
+        checks,
+        "counterevidence_route_claim_mismatch",
+        claim_id="claim-1",
+        lane="counterevidence",
+        query_id=route["original"]["query_id"],
+    )
+
+
+def test_counterevidence_gate_rejects_missing_broadened_fallback(tmp_path: Path) -> None:
+    route = _collect_broadened_zero_run(tmp_path)
+    _mutate_query(tmp_path, route["fallback"]["query_id"], lambda row: None)
+
+    checks = verify_run(tmp_path, require_counterevidence_coverage=True)
+
+    assert not checks["ok"]
+    _assert_blocker(
+        checks,
+        "counterevidence_zero_results_without_fallback",
+        claim_id="claim-1",
+        lane="counterevidence",
+        query_id=route["original"]["query_id"],
+    )
+
+
+def test_counterevidence_gate_rejects_duplicate_broadened_fallback(tmp_path: Path) -> None:
+    route = _collect_broadened_zero_run(tmp_path)
+    path = tmp_path / "web_evidence" / "queries.jsonl"
+    rows = read_jsonl(path)
+    rows.append({**route["fallback"], "query_id": "duplicate-fallback-query"})
+    _write_jsonl(path, rows)
+
+    checks = verify_run(tmp_path, require_counterevidence_coverage=True)
+
+    assert not checks["ok"]
+    _assert_blocker(
+        checks,
+        "counterevidence_zero_results_duplicate_fallback",
+        claim_id="claim-1",
+        lane="counterevidence",
+        query_id=route["original"]["query_id"],
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "blocker_type"),
+    [
+        (lambda row: {**row, "claim_ids": ["claim-2"]}, "counterevidence_zero_results_mislinked_fallback"),
+        (lambda row: {**row, "claim_ids": ["claim-1", "claim-2"]}, "counterevidence_zero_results_mislinked_fallback"),
+        (lambda row: {**row, "lane": "freshness_supersession"}, "counterevidence_zero_results_mislinked_fallback"),
+        (lambda row: {**row, "query_strategy": "exact_claim"}, "counterevidence_zero_results_without_fallback"),
+        (lambda row: {**row, "fallback_for_query_id": "other-query"}, "counterevidence_zero_results_without_fallback"),
+    ],
+)
+def test_counterevidence_gate_rejects_mislinked_broadened_fallback_query(
+    tmp_path: Path, mutate, blocker_type: str
+) -> None:
+    route = _collect_broadened_zero_run(tmp_path)
+    _mutate_query(tmp_path, route["fallback"]["query_id"], mutate)
+
+    checks = verify_run(tmp_path, require_counterevidence_coverage=True)
+
+    assert not checks["ok"]
+    _assert_blocker(
+        checks,
+        blocker_type,
+        claim_id="claim-1",
+        lane="counterevidence",
+        query_id=route["original"]["query_id"],
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "blocker_type", "blocked_query"),
+    [
+        (
+            lambda row: {**row, "provider_id": "other"},
+            "counterevidence_provider_mismatch",
+            "fallback",
+        ),
+        (
+            lambda row: {**row, "status": "transport_error", "typed_error": "timeout"},
+            "counterevidence_failed",
+            "fallback",
+        ),
+        (
+            lambda row: {**row, "query_id": "other-query"},
+            "counterevidence_not_executed",
+            "fallback",
+        ),
+    ],
+)
+def test_counterevidence_gate_rejects_fallback_search_result_identity_tampering(
+    tmp_path: Path, mutate, blocker_type: str, blocked_query: str
+) -> None:
+    route = _collect_broadened_zero_run(tmp_path)
+    _mutate_flat_search_result(tmp_path, route["fallback"]["query_id"], mutate)
+
+    checks = verify_run(tmp_path, require_counterevidence_coverage=True)
+
+    assert not checks["ok"]
+    query_id = route[blocked_query]["query_id"]
+    expected = {
+        "claim_id": "claim-1",
+        "lane": "counterevidence",
+        "query_id": query_id,
+    }
+    if blocker_type == "counterevidence_provider_mismatch":
+        expected.update({"provider_id": "other", "expected_provider_id": "ddgs"})
+    if blocker_type == "counterevidence_failed":
+        expected.update({"provider_id": "ddgs", "status": "transport_error", "typed_error": "timeout"})
+    _assert_blocker(checks, blocker_type, **expected)
+
+
+def test_counterevidence_gate_rejects_positive_fallback_provider_tampering(tmp_path: Path) -> None:
+    route = _collect_broadened_zero_run(tmp_path)
+    _mutate_flat_search_result(
+        tmp_path,
+        route["fallback"]["query_id"],
+        lambda row: {
+            **row,
+            "provider_id": "other",
+            "status": "success",
+            "typed_error": "",
+            "result_count": 1,
+            "hits": [
+                {
+                    "provider_id": "other",
+                    "provider_result_id": "other:1",
+                    "rank": 1,
+                    "url": "https://example.com/positive",
+                    "title": "Positive",
+                    "snippet": "snippet",
+                    "eligible_as_evidence": False,
+                }
+            ],
+        },
+    )
+
+    checks = verify_run(tmp_path, require_counterevidence_coverage=True)
+
+    assert not checks["ok"]
+    _assert_blocker(
+        checks,
+        "counterevidence_provider_mismatch",
+        claim_id="claim-1",
+        lane="counterevidence",
+        query_id=route["fallback"]["query_id"],
+        provider_id="other",
+        expected_provider_id="ddgs",
+    )
 
 
 def test_counterevidence_broadened_timeout_fails_closed(tmp_path: Path) -> None:
