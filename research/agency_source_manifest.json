@@ -1,0 +1,97 @@
+{
+  "all_ok": true,
+  "artifacts": [
+    {
+      "bytes": 59010,
+      "expected_sha256": "20b2fbf4337bff36edc15a9d81361d285435f58b95478657b85ccdd578869415",
+      "ok": true,
+      "path": "research/MARKET_LAB_AGENCY_DELIVERY_PLAN.md",
+      "sha256": "20b2fbf4337bff36edc15a9d81361d285435f58b95478657b85ccdd578869415"
+    },
+    {
+      "bytes": 32804,
+      "expected_sha256": "de0fd675f3c1af1b9b0e558f2b2876439a4bd72cd4ed45eeb911035d7fa55ad4",
+      "ok": true,
+      "path": "research/MARKET_LAB_VIRTUAL_AGENCY_ROADMAP.md",
+      "sha256": "de0fd675f3c1af1b9b0e558f2b2876439a4bd72cd4ed45eeb911035d7fa55ad4"
+    },
+    {
+      "bytes": 76759,
+      "expected_sha256": "c6f7d88677a77b897cc8b7ee604e9c52f0dc063ecdb609f76c1c02cdff6f8527",
+      "ok": true,
+      "path": "research/AGENCY_COMPANY_INTELLIGENCE_SPEC.md",
+      "sha256": "c6f7d88677a77b897cc8b7ee604e9c52f0dc063ecdb609f76c1c02cdff6f8527"
+    },
+    {
+      "bytes": 11734,
+      "expected_sha256": "2e766718a67f9a71ec83352629cddbeb0ddaec3ba3e45ec519786becaa1b4ab2",
+      "ok": true,
+      "path": "research/AGENCY_COMPANY_INTELLIGENCE_SPEC_REVIEW.md",
+      "sha256": "2e766718a67f9a71ec83352629cddbeb0ddaec3ba3e45ec519786becaa1b4ab2"
+    },
+    {
+      "bytes": 10324,
+      "expected_sha256": "aaf3e8daf2256f76ed5ad5af8f6b9e428422b58cb927cc4d89fe57ac89d32485",
+      "ok": true,
+      "path": "research/AGENCY_COMPANY_INTELLIGENCE_SPEC_REREVIEW.md",
+      "sha256": "aaf3e8daf2256f76ed5ad5af8f6b9e428422b58cb927cc4d89fe57ac89d32485"
+    },
+    {
+      "bytes": 80127,
+      "expected_sha256": "bb347b2aa0071dadba1955bddf35735cb05e5fb5f2e1a08ed07f69ac93f421f7",
+      "ok": true,
+      "path": "research/AGENCY_VALUATION_MEMO_SPEC.md",
+      "sha256": "bb347b2aa0071dadba1955bddf35735cb05e5fb5f2e1a08ed07f69ac93f421f7"
+    },
+    {
+      "bytes": 15549,
+      "expected_sha256": "576caa6eb9de513b7b0847b65ffa86213a46e7a4742f02469d8f64d972b8411b",
+      "ok": true,
+      "path": "research/AGENCY_VALUATION_MEMO_SPEC_REVIEW.md",
+      "sha256": "576caa6eb9de513b7b0847b65ffa86213a46e7a4742f02469d8f64d972b8411b"
+    },
+    {
+      "bytes": 9050,
+      "expected_sha256": "652758a63b50e15ba34c41dba54e470937e50fb98591e3333f1ed5852826b77c",
+      "ok": true,
+      "path": "research/AGENCY_VALUATION_MEMO_SPEC_REREVIEW.md",
+      "sha256": "652758a63b50e15ba34c41dba54e470937e50fb98591e3333f1ed5852826b77c"
+    },
+    {
+      "bytes": 66871,
+      "expected_sha256": "4602e44a9551eeae5a76eeffbe4d06aab39ac01714cf93623d85ca7e13ae6741",
+      "ok": true,
+      "path": "research/AGENCY_INVESTMENT_COMMITTEE_SPEC.md",
+      "sha256": "4602e44a9551eeae5a76eeffbe4d06aab39ac01714cf93623d85ca7e13ae6741"
+    },
+    {
+      "bytes": 7488,
+      "expected_sha256": "c14e8d858c3224f57e703ffa55a059679dee3753a0d8b9f44558d42e1f01f0a9",
+      "ok": true,
+      "path": "research/AGENCY_INVESTMENT_COMMITTEE_SPEC_REVIEW.md",
+      "sha256": "c14e8d858c3224f57e703ffa55a059679dee3753a0d8b9f44558d42e1f01f0a9"
+    },
+    {
+      "bytes": 77891,
+      "expected_sha256": "17083c752184466686fb9a8ec0acd1e1fcd1561ec30bcda9029a57c45f52708a",
+      "ok": true,
+      "path": "research/AGENCY_THESIS_PORTFOLIO_LEARNING_SPEC.md",
+      "sha256": "17083c752184466686fb9a8ec0acd1e1fcd1561ec30bcda9029a57c45f52708a"
+    },
+    {
+      "bytes": 18956,
+      "expected_sha256": "dfd4c73b0fac67f0d0ca5af0511159a7cb95f63b540d0bb6cef87aa29f7918d2",
+      "ok": true,
+      "path": "research/AGENCY_THESIS_PORTFOLIO_LEARNING_SPEC_REVIEW.md",
+      "sha256": "dfd4c73b0fac67f0d0ca5af0511159a7cb95f63b540d0bb6cef87aa29f7918d2"
+    },
+    {
+      "bytes": 11514,
+      "expected_sha256": "d98a951cb3953813d0f18c750550de73a37d7428a8b640b0aec3ffea652eda75",
+      "ok": true,
+      "path": "research/AGENCY_THESIS_PORTFOLIO_LEARNING_SPEC_REREVIEW.md",
+      "sha256": "d98a951cb3953813d0f18c750550de73a37d7428a8b640b0aec3ffea652eda75"
+    }
+  ],
+  "mode": "slice0-source-authority"
+}

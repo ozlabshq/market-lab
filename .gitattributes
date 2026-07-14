@@ -1,0 +1,3 @@
+# Preserve reviewed byte-exact agency Markdown; trailing pairs are intentional hard breaks.
+research/AGENCY_*.md whitespace=-blank-at-eol
+research/MARKET_LAB_VIRTUAL_AGENCY_ROADMAP.md whitespace=-blank-at-eol
