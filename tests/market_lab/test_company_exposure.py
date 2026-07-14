@@ -6,11 +6,55 @@ from decimal import Decimal, getcontext
 import pytest
 
 from market_lab.agency_contracts import canonical_json, strict_json_loads
-from market_lab.company_exposure import ExposureResult, ExposureStatus, MaterialityBand, assess_exposure
+from market_lab.company_exposure import (
+    ExposureEvidence,
+    ExposureResult,
+    ExposureStatus,
+    MaterialityBand,
+    assess_exposure,
+    assess_exposure_from_evidence,
+)
 
 
 def d(value: str) -> Decimal:
     return Decimal(value)
+
+
+def evidence(
+    *,
+    evidence_id: str = "evidence-1",
+    numerator_value: Decimal | None = d("10"),
+    numerator_low: Decimal | None = None,
+    numerator_high: Decimal | None = None,
+    denominator_value: Decimal | None = d("100"),
+    period_start: str = "2026-01-01",
+    period_end: str = "2026-12-31",
+    period_type: str = "FY",
+    scope: str = "global",
+    unit: str = "USD",
+    currency: str = "USD",
+    accounting_basis: str = "GAAP",
+    entity_id: str = "ent-1",
+    source_as_of_utc: str = "2026-07-14T00:00:00Z",
+    supersedes_evidence_id: str | None = None,
+) -> ExposureEvidence:
+    return ExposureEvidence(
+        evidence_id=evidence_id,
+        numerator_value=numerator_value,
+        numerator_low=numerator_low,
+        numerator_high=numerator_high,
+        denominator_value=denominator_value,
+        period_start=period_start,
+        period_end=period_end,
+        period_type=period_type,
+        scope=scope,
+        unit=unit,
+        currency=currency,
+        accounting_basis=accounting_basis,
+        entity_id=entity_id,
+        source_as_of_utc=source_as_of_utc,
+        supersedes_evidence_id=supersedes_evidence_id,
+    )
 
 
 def test_assess_exposure_is_zero_network(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -165,3 +209,155 @@ def test_exposure_result_is_frozen_and_round_trips_stably() -> None:
 def test_exact_case_uses_equal_bounds() -> None:
     exact = assess_exposure(numerator_value=d("2"), denominator_value=d("8"))
     assert exact.share_low == exact.share_high
+
+
+def _selection_context(
+    *,
+    evidence_inputs: tuple[ExposureEvidence, ...] = (evidence(),),
+    period_start: str = "2026-01-01",
+    period_end: str = "2026-12-31",
+    period_type: str = "FY",
+    scope: str = "global",
+    unit: str = "USD",
+    currency: str = "USD",
+    accounting_basis: str = "GAAP",
+    entity_id: str = "ent-1",
+    as_of_utc: str = "2026-07-14T00:00:00Z",
+    denominator_value: Decimal | None = None,
+    allow_superseded: bool = False,
+    readiness_critical: bool = False,
+) -> ExposureResult:
+    return assess_exposure_from_evidence(
+        evidence_inputs=evidence_inputs,
+        period_start=period_start,
+        period_end=period_end,
+        period_type=period_type,
+        scope=scope,
+        currency=currency,
+        unit=unit,
+        accounting_basis=accounting_basis,
+        entity_id=entity_id,
+        as_of_utc=as_of_utc,
+        denominator_value=denominator_value,
+        allow_superseded=allow_superseded,
+        readiness_critical=readiness_critical,
+    )
+
+
+def test_assess_exposure_from_evidence_selects_compatible_input() -> None:
+    result = _selection_context(evidence_inputs=(
+        evidence(evidence_id="matching", numerator_value=d("10"), denominator_value=d("100")),
+        evidence(evidence_id="misaligned", period_start="2025-01-01"),
+    ))
+
+    assert result.status is ExposureStatus.VALID
+    assert result.share_low == d("0.1")
+    assert result.share_high == d("0.1")
+    assert result.blockers == ()
+
+
+def test_assess_exposure_from_evidence_enforces_exact_period_and_scope_denominator_alignment() -> None:
+    period = _selection_context(evidence_inputs=(evidence(evidence_id="p1", period_end="2025-12-31"),))
+    assert period.status is ExposureStatus.BLOCKED
+    assert period.blockers == ("period_mismatch",)
+
+    scope = _selection_context(
+        evidence_inputs=(evidence(evidence_id="s1", scope="local"),),
+        scope="global",
+    )
+    assert scope.status is ExposureStatus.BLOCKED
+    assert scope.blockers == ("scope_mismatch",)
+
+    unit = _selection_context(
+        evidence_inputs=(evidence(evidence_id="u1", unit="EUR"),),
+        unit="USD",
+    )
+    assert unit.status is ExposureStatus.BLOCKED
+    assert unit.blockers == ("unit_currency_accounting_basis_mismatch",)
+
+
+def test_assess_exposure_from_evidence_blocks_stale_superseded_and_allows_explicit_choice() -> None:
+    stale = _selection_context(
+        evidence_inputs=(
+            evidence(evidence_id="old", numerator_value=d("10")),
+            evidence(evidence_id="new", numerator_value=d("20"), supersedes_evidence_id="old"),
+        )
+    )
+
+    assert stale.status is ExposureStatus.BLOCKED
+    assert stale.blockers == ("stale_superseded_evidence",)
+
+    explicit = _selection_context(
+        evidence_inputs=(
+            evidence(evidence_id="old", numerator_value=d("10")),
+            evidence(evidence_id="new", numerator_value=d("20"), supersedes_evidence_id="old"),
+        ),
+        allow_superseded=True,
+    )
+    assert explicit.status is ExposureStatus.VALID
+    assert explicit.share_low == d("0.2")
+
+
+def test_assess_exposure_from_evidence_blocks_ambiguous_denominator_and_double_count() -> None:
+    ambiguous = _selection_context(
+        evidence_inputs=(
+            evidence(evidence_id="a1", denominator_value=d("100")),
+            evidence(evidence_id="a2", denominator_value=d("200")),
+        )
+    )
+    assert ambiguous.status is ExposureStatus.BLOCKED
+    assert ambiguous.blockers == ("ambiguous_denominator",)
+
+    duplicate = _selection_context(
+        evidence_inputs=(
+            evidence(evidence_id="d1", numerator_value=d("10")),
+            evidence(evidence_id="d2", numerator_value=d("10")),
+        ),
+        denominator_value=d("100"),
+    )
+    assert duplicate.status is ExposureStatus.BLOCKED
+    assert duplicate.blockers == ("duplicate_or_double_count",)
+
+
+def test_assess_exposure_from_evidence_blocks_source_timestamp_and_entity_fit() -> None:
+    future = _selection_context(
+        evidence_inputs=(
+            evidence(
+                evidence_id="future",
+                source_as_of_utc="2026-12-31T00:00:00Z",
+                numerator_value=d("1"),
+            ),
+        ),
+        as_of_utc="2026-07-14T00:00:00Z",
+    )
+    assert future.status is ExposureStatus.BLOCKED
+    assert future.blockers == ("source_timestamp_unavailable",)
+
+    bad_entity = _selection_context(
+        evidence_inputs=(
+            evidence(evidence_id="entity", entity_id="wrong", numerator_value=d("1")),
+        ),
+        entity_id="ent-1",
+    )
+    assert bad_entity.status is ExposureStatus.BLOCKED
+    assert bad_entity.blockers == ("entity_mismatch",)
+
+
+def test_assess_exposure_from_evidence_blocks_critical_unknown() -> None:
+    critical = _selection_context(
+        evidence_inputs=(
+            evidence(evidence_id="critical", numerator_value=None, denominator_value=d("100")),
+        ),
+        readiness_critical=True,
+    )
+    assert critical.status is ExposureStatus.BLOCKED
+    assert critical.blockers == ("critical_unknown",)
+
+    non_critical = _selection_context(
+        evidence_inputs=(
+            evidence(evidence_id="non-critical", numerator_value=None, denominator_value=d("100")),
+        ),
+        readiness_critical=False,
+    )
+    assert non_critical.status is ExposureStatus.UNKNOWN
+    assert non_critical.share_low is None
