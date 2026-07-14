@@ -509,6 +509,8 @@ def _validate_revisions(
             or not _same_period(target.provenance, doc.provenance)
         ):
             reasons.add("incompatible_revision_target")
+        if _dt(doc.provenance.source_published_at_utc) < _dt(target.provenance.source_published_at_utc):
+            reasons.add("revision_non_monotonic_publication")
         if _dt(doc.provenance.system_available_at_utc) <= _dt(target.provenance.system_available_at_utc):
             reasons.add("revision_non_monotonic_availability")
         successors.setdefault(target_id, []).append(doc.document_id)

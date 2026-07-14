@@ -64,6 +64,7 @@ def document(
     relation: RevisionRelation | None = None,
     supersedes: TypedID | None = None,
     available: str = "2026-04-20T12:05:00Z",
+    source_published: str = "2026-04-20T12:00:00Z",
 ) -> NormalizedCompanyDocument:
     return NormalizedCompanyDocument(
         document_id=tid("company_document", local_id),
@@ -73,6 +74,7 @@ def document(
             period_start=period_start,
             period_end=period_end,
             normalized_text=text,
+            source_published_at_utc=source_published,
             system_available_at_utc=available,
         ),
         revision=revision,
@@ -350,6 +352,123 @@ def test_revision_target_rejects_cross_issuer_and_cross_period() -> None:
         NOW,
     )
     assert "incompatible_revision_target" in result.reason_codes
+
+
+def test_revision_source_publication_gate_is_non_decreasing_for_corrections_and_amendments() -> None:
+    original = document(
+        "source-chronology-original",
+        source_published="2026-04-20T12:00:00Z",
+        available="2026-04-20T12:05:00Z",
+    )
+    stale_correction = document(
+        "source-chronology-correction",
+        text="Revenue rose 11%.\nMargins expanded.",
+        revision=RevisionKind.CORRECTION,
+        target=original.document_id,
+        relation=RevisionRelation.CORRECTS,
+        supersedes=original.document_id,
+        source_published="2026-04-19T12:00:00Z",
+        available="2026-04-21T09:00:00Z",
+    )
+    stale_amendment = document(
+        "source-chronology-amendment",
+        text="Revenue rose 12%.\nMargins expanded.",
+        revision=RevisionKind.AMENDMENT,
+        target=original.document_id,
+        relation=RevisionRelation.AMENDS,
+        supersedes=original.document_id,
+        source_published="2026-04-19T12:00:00Z",
+        available="2026-04-21T09:10:00Z",
+    )
+
+    result = validate_company_document_bundle(
+        documents=(original, stale_correction),
+        segments=segments(original) + segments(stale_correction),
+        citations=(),
+        accepted_evidence_ids={tid("evidence", "alpha-q1-source")},
+        expected_issuer_id=tid("issuer", "alpha"),
+        as_of_utc=NOW,
+    )
+    assert result.ok is False
+    assert "revision_non_monotonic_publication" in result.reason_codes
+
+    result = validate_company_document_bundle(
+        documents=(original, stale_amendment),
+        segments=segments(original) + segments(stale_amendment),
+        citations=(),
+        accepted_evidence_ids={tid("evidence", "alpha-q1-source")},
+        expected_issuer_id=tid("issuer", "alpha"),
+        as_of_utc=NOW,
+    )
+    assert result.ok is False
+    assert "revision_non_monotonic_publication" in result.reason_codes
+
+
+def test_revision_source_publication_allows_equal_or_later_dates() -> None:
+    original = document(
+        "source-chronology-accepted-original",
+        source_published="2026-04-20T12:00:00Z",
+        available="2026-04-20T12:05:00Z",
+    )
+    equal_correction = document(
+        "source-chronology-equal",
+        text="Revenue rose 11%.\nMargins expanded.",
+        revision=RevisionKind.CORRECTION,
+        target=original.document_id,
+        relation=RevisionRelation.CORRECTS,
+        supersedes=original.document_id,
+        source_published="2026-04-20T12:00:00Z",
+        available="2026-04-21T09:00:00Z",
+    )
+    later_amendment = document(
+        "source-chronology-later",
+        text="Revenue rose 12%.\nMargins expanded.",
+        revision=RevisionKind.AMENDMENT,
+        target=original.document_id,
+        relation=RevisionRelation.AMENDS,
+        supersedes=original.document_id,
+        source_published="2026-04-22T00:00:00Z",
+        available="2026-04-22T09:00:00Z",
+    )
+
+    equal_result = validate_company_document_bundle(
+        documents=(original, equal_correction),
+        segments=segments(original) + segments(equal_correction),
+        citations=(),
+        accepted_evidence_ids={tid("evidence", "alpha-q1-source")},
+        expected_issuer_id=tid("issuer", "alpha"),
+        as_of_utc="2026-04-23T00:00:00Z",
+    )
+    assert equal_result.ok is True
+    assert equal_result.active_document_ids == (equal_correction.document_id,)
+
+    later_result = validate_company_document_bundle(
+        documents=(original, later_amendment),
+        segments=segments(original) + segments(later_amendment),
+        citations=(),
+        accepted_evidence_ids={tid("evidence", "alpha-q1-source")},
+        expected_issuer_id=tid("issuer", "alpha"),
+        as_of_utc="2026-04-23T00:00:00Z",
+    )
+    assert later_result.ok is True
+    assert later_result.active_document_ids == (later_amendment.document_id,)
+
+
+def test_revision_validation_fails_closed_for_malformed_source_published_timestamps() -> None:
+    original = document()
+    malformed = original.to_dict()
+    malformed["provenance"]["source_published_at_utc"] = "not-a-timestamp"
+
+    result = validate_company_document_bundle(
+        documents=(malformed,),
+        segments=(),
+        citations=(),
+        accepted_evidence_ids={tid("evidence", "alpha-q1-source")},
+        expected_issuer_id=tid("issuer", "alpha"),
+        as_of_utc=NOW,
+    )
+    assert result.ok is False
+    assert result.reason_codes == ("empty_documents", "malformed_documents")
 
 
 def test_entity_temporal_dedupe_and_malformed_inputs_fail_closed() -> None:
