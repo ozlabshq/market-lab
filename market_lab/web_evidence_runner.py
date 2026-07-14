@@ -215,6 +215,88 @@ def _classify_source_type(claim_text: str) -> str:
     return "web_document"
 
 
+_REQUIRED_DISCOVERY_LANES = {"counterevidence", "freshness_supersession"}
+_QUERY_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "in", "is", "it", "of", "on", "or", "that", "the", "their", "this", "to", "was", "were", "with",
+}
+
+
+def _broadened_query(claim_text: str, lane: str) -> str:
+    body = claim_text.split(":", 1)[-1]
+    tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9'&.-]*", body)
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        key = token.lower().strip(".-")
+        if not key or key in _QUERY_STOPWORDS or key in seen:
+            continue
+        seen.add(key)
+        keywords.append(token.strip(".-"))
+        if len(keywords) >= 12:
+            break
+    if len(keywords) < 3:
+        keywords = [token.strip(".-") for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9'&.-]*", claim_text)[:12]]
+    suffix = ["correction", "denial", "retraction"] if lane == "counterevidence" else ["update", "amendment", "latest"]
+    return normalize_query(" ".join([*keywords, *suffix]))[:220]
+
+
+def _build_broadened_fallback(request: SearchRequest, claim_text: str) -> SearchRequest:
+    query_id = request_id_for("query", f"{request.run_id}:{request.query_id}:broadened_fallback")
+    return SearchRequest(
+        request_id=request_id_for("search", f"{request.run_id}:{request.query_id}:broadened_fallback"),
+        query_id=query_id,
+        run_id=request.run_id,
+        claim_ids=request.claim_ids,
+        exact_query=_broadened_query(claim_text, request.lane),
+        lane=request.lane,
+        max_results=request.max_results,
+        timeout_seconds=request.timeout_seconds,
+        budget_reservation_id=request.budget_reservation_id,
+        query_strategy="broadened_fallback",
+        fallback_for_query_id=request.query_id,
+    )
+
+
+def _execute_search(run_dir: Path, provider: Any, request: SearchRequest, claim_id: str):
+    response = provider.search(request)
+    append_search_results(run_dir, response)
+    append_provider_call(
+        run_dir,
+        {
+            "event": "search",
+            "provider_id": response.provider_id,
+            "query_id": response.query_id,
+            "request_id": response.request_id,
+            "status": response.status,
+            "result_count": response.result_count,
+            "typed_error": response.typed_error,
+            "raw_payload_hash": response.raw_payload_hash,
+            "latency_ms": response.latency_ms,
+            "query_strategy": request.query_strategy,
+            "fallback_for_query_id": request.fallback_for_query_id,
+        },
+    )
+    if not response.hits:
+        append_audit_chain(
+            run_dir,
+            {
+                "event_type": "claim_search_zero_results" if response.status == "zero_results" else "claim_search_empty",
+                "claim_id": claim_id,
+                "claim_ids": [claim_id],
+                "run_id": request.run_id,
+                "query_id": request.query_id,
+                "lane": request.lane,
+                "provider_id": response.provider_id,
+                "status": response.status,
+                "typed_error": response.typed_error,
+                "query_strategy": request.query_strategy,
+                "fallback_for_query_id": request.fallback_for_query_id,
+                "latency_ms": response.latency_ms,
+            },
+        )
+    return response
+
+
 def _build_claim_queries(claim: dict[str, Any], idx: int, run_id: str, profile: BudgetProfile) -> list[SearchRequest]:
     claim_id = claim.get("claim_id") or claim.get("id") or f"claim-{idx}"
     text = _claim_text(claim)[:250]
@@ -511,6 +593,10 @@ def collect_for_claims(
     result["claims"] = total_claims
     plan: list[dict[str, Any]] = []
     existing_queries = {row.get("query_id") for row in read_jsonl(base / "queries.jsonl")}
+    existing_search_results: dict[str, list[dict[str, Any]]] = {}
+    for row in _flatten_search_result_rows(read_jsonl(base / "search_results.jsonl")):
+        if row.get("query_id"):
+            existing_search_results.setdefault(str(row["query_id"]), []).append(row)
     existing_calls = {row.get("provider_call_id") for row in read_jsonl(base / "provider_calls.jsonl") if row.get("status") == "success"}
     existing_evidence = {row.get("evidence_id") for row in read_jsonl(run_dir / "evidence.jsonl")}
     seen_canonical_urls: set[str] = {
@@ -609,38 +695,38 @@ def collect_for_claims(
                 }
             )
             if query_already_done:
-                continue
+                prior_results = existing_search_results.get(search_request.query_id, [])
+                if not prior_results or prior_results[-1].get("status") != "zero_results" or search_request.lane not in _REQUIRED_DISCOVERY_LANES:
+                    continue
+                search_response = None
+            else:
+                search_response = _execute_search(run_dir, ddgs, search_request, claim_id)
+                result["searches"] += 1
 
-            search_response = ddgs.search(search_request)
-            append_search_results(run_dir, search_response)
-            append_provider_call(
-                run_dir,
-                {
-                    "event": "search",
-                    "provider_id": search_response.provider_id,
-                    "query_id": search_response.query_id,
-                    "request_id": search_response.request_id,
-                    "status": search_response.status,
-                    "result_count": search_response.result_count,
-                    "typed_error": search_response.typed_error,
-                    "raw_payload_hash": search_response.raw_payload_hash,
-                    "latency_ms": search_response.latency_ms,
-                },
-            )
-            result["searches"] += 1
-            if not search_response.hits:
-                append_audit_chain(
-                    run_dir,
+            original_zero_results = search_response is None or search_response.status == "zero_results"
+            if original_zero_results and search_request.lane in _REQUIRED_DISCOVERY_LANES:
+                fallback_request = _build_broadened_fallback(search_request, claim_text)
+                fallback_already_done = fallback_request.query_id in existing_queries
+                if append_query_event_once(run_dir, asdict(fallback_request)):
+                    existing_queries.add(fallback_request.query_id)
+                plan.append(
                     {
-                        "event_type": "claim_search_empty",
                         "claim_id": claim_id,
-                        "run_id": run_id,
-                        "query_id": search_request.query_id,
-                        "lane": search_request.lane,
-                        "status": search_response.status,
-                        "typed_error": search_response.typed_error,
-                    },
+                        "query_id": fallback_request.query_id,
+                        "query": fallback_request.exact_query,
+                        "lane": fallback_request.lane,
+                        "source_type": _classify_source_type(claim_text),
+                        "query_strategy": fallback_request.query_strategy,
+                        "fallback_for_query_id": fallback_request.fallback_for_query_id,
+                    }
                 )
+                if fallback_already_done:
+                    continue
+                search_request = fallback_request
+                search_response = _execute_search(run_dir, ddgs, search_request, claim_id)
+                result["searches"] += 1
+
+            if search_response is None or not search_response.hits:
                 continue
 
             for hit in search_response.hits:
@@ -1198,7 +1284,7 @@ def verify_run(
     snapshot_rows = read_jsonl(snapshot_index) if snapshot_index.exists() else []
     segment_rows = read_jsonl(run_dir / "web_evidence" / "segments.jsonl")
 
-    checks = {
+    checks: dict[str, Any] = {
         "has_evidence": len(evidence_rows) > 0,
         "search_rows_present": len(search_rows) > 0,
         "provider_calls_present": len(provider_calls) > 0,
@@ -1262,13 +1348,24 @@ def verify_run(
             for cid in row.get("claim_ids", []):
                 if str(cid) in planned:
                     planned[str(cid)][lane].append(row)
+        audit_rows = read_jsonl(audit_log) if audit_log.exists() else []
+        audited_zero_query_ids = {
+            str(row.get("query_id"))
+            for row in audit_rows
+            if row.get("event_type") == "claim_search_zero_results"
+            and row.get("status") == "zero_results"
+            and row.get("query_id")
+        }
         blockers: list[dict[str, str]] = []
+        accepted_zero_result_routes: list[dict[str, str]] = []
         for cid, lanes in sorted(planned.items()):
             for lane in required_lanes:
                 lane_queries = lanes[lane]
                 if not lane_queries:
                     blockers.append({"type": f"{lane}_missing", "claim_id": cid, "lane": lane})
                     continue
+                clean_zero_query_ids: set[str] = set()
+                positive_query_ids: set[str] = set()
                 for query in sorted(lane_queries, key=lambda row: str(row.get("query_id") or "")):
                     query_id = str(query.get("query_id") or "")
                     results = executed_by_query.get(query_id, [])
@@ -1283,7 +1380,20 @@ def verify_run(
                             result_count = int(enriched.get("result_count") or 0)
                         except (TypeError, ValueError):
                             result_count = 0
-                        if result_count <= 0 and status in {"success", "degraded", ""}:
+                        if status == "zero_results" and result_count == 0:
+                            if query_id not in audited_zero_query_ids:
+                                blockers.append(
+                                    {
+                                        "type": f"{lane}_zero_results_unaudited",
+                                        "claim_id": cid,
+                                        "lane": lane,
+                                        "query_id": query_id,
+                                        "provider_id": str(enriched.get("provider_id") or ""),
+                                    }
+                                )
+                            else:
+                                clean_zero_query_ids.add(query_id)
+                        elif result_count <= 0 and status in {"success", "degraded", ""}:
                             blockers.append(
                                 {
                                     "type": f"{lane}_no_results",
@@ -1293,7 +1403,9 @@ def verify_run(
                                     "provider_id": str(enriched.get("provider_id") or ""),
                                 }
                             )
-                        elif status != "success":
+                        elif status == "success":
+                            positive_query_ids.add(query_id)
+                        else:
                             blockers.append(
                                 {
                                     "type": f"{lane}_failed",
@@ -1305,8 +1417,42 @@ def verify_run(
                                     "typed_error": typed_error,
                                 }
                             )
+                for query in lane_queries:
+                    query_id = str(query.get("query_id") or "")
+                    if query_id not in clean_zero_query_ids or query.get("query_strategy") == "broadened_fallback":
+                        continue
+                    fallback_queries = [
+                        row
+                        for row in lane_queries
+                        if row.get("query_strategy") == "broadened_fallback" and row.get("fallback_for_query_id") == query_id
+                    ]
+                    if not fallback_queries:
+                        blockers.append(
+                            {
+                                "type": f"{lane}_zero_results_without_fallback",
+                                "claim_id": cid,
+                                "lane": lane,
+                                "query_id": query_id,
+                            }
+                        )
+                        continue
+                    for fallback in fallback_queries:
+                        fallback_id = str(fallback.get("query_id") or "")
+                        if fallback_id in clean_zero_query_ids:
+                            accepted_zero_result_routes.append(
+                                {
+                                    "claim_id": cid,
+                                    "lane": lane,
+                                    "query_id": query_id,
+                                    "fallback_query_id": fallback_id,
+                                    "outcome": "audited_zero_results_after_broadened_fallback",
+                                }
+                            )
+                        elif fallback_id in positive_query_ids:
+                            break
         checks["counterevidence_coverage_ok"] = not blockers
         checks["coverage_blockers"] = blockers
+        checks["accepted_zero_result_routes"] = accepted_zero_result_routes
         checks["automated_evidence_context_only"] = all(
             row.get("stance") == "context" for row in evidence_rows if row.get("source_lineage", "").startswith("web_evidence")
         )

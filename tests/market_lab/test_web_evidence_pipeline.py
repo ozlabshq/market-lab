@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from market_lab.web_evidence import FetchResponse, ProviderHealth, SearchHit, SearchResponse, utcnow
 from market_lab.web_evidence_runner import collect_for_claims, verify_run
-from market_lab.web_evidence_store import read_jsonl
+from market_lab.web_evidence_store import append_audit_chain, read_jsonl
 
 
 class _DDGS:
@@ -22,6 +22,26 @@ class _DDGS:
             hits=[SearchHit("ddgs", "hit-1", 1, "https://example.com/report", "Report", "snippet")],
             result_count=1,
             latency_ms=1,
+        )
+
+
+class _CleanZeroDDGS(_DDGS):
+    def __init__(self, *, fallback_status: str = "zero_results") -> None:
+        self.fallback_status = fallback_status
+
+    def search(self, request):
+        if request.lane == "primary_source":
+            return super().search(request)
+        status = self.fallback_status if getattr(request, "fallback_for_query_id", None) else "zero_results"
+        return SearchResponse(
+            request_id=request.request_id,
+            query_id=request.query_id,
+            provider_id="ddgs",
+            status=status,
+            hits=[],
+            result_count=0,
+            latency_ms=1,
+            typed_error="timeout" if status == "transport_error" else "zero_results",
         )
 
 
@@ -191,6 +211,66 @@ def test_counterevidence_gate_reports_zero_search_results(tmp_path: Path) -> Non
         "query_id": query_id,
         "provider_id": "ddgs",
     } in checks["coverage_blockers"]
+
+
+def test_counterevidence_clean_zero_without_fallback_fails_closed(tmp_path: Path) -> None:
+    with patch("market_lab.web_evidence_runner.build_registry", lambda profile, include_optional: _providers()):
+        collect_for_claims(tmp_path, [{"claim_id": "claim-1", "text": "Example Corp revenue increased"}], mode="live", run_id="run")
+
+    def zero(row):
+        row.update({"status": "zero_results", "typed_error": "zero_results", "result_count": 0, "hits": []})
+        return row
+
+    query_id = _rewrite_search_row(tmp_path, "counterevidence", zero)
+    append_audit_chain(
+        tmp_path,
+        {
+            "event_type": "claim_search_zero_results",
+            "claim_id": "claim-1",
+            "claim_ids": ["claim-1"],
+            "run_id": "run",
+            "query_id": query_id,
+            "lane": "counterevidence",
+            "provider_id": "ddgs",
+            "status": "zero_results",
+            "typed_error": "zero_results",
+        },
+    )
+
+    checks = verify_run(tmp_path, require_counterevidence_coverage=True)
+
+    assert not checks["ok"]
+    assert any(row["type"] == "counterevidence_zero_results_without_fallback" for row in checks["coverage_blockers"])
+
+
+def test_counterevidence_gate_accepts_audited_broadened_zero_results(tmp_path: Path) -> None:
+    providers = [_CleanZeroDDGS(), _Direct()]
+    with patch("market_lab.web_evidence_runner.build_registry", lambda profile, include_optional: providers):
+        collect_for_claims(tmp_path, [{"claim_id": "claim-1", "text": "Example Corp revenue increased"}], mode="live", run_id="run")
+
+    checks = verify_run(tmp_path, require_counterevidence_coverage=True, require_audit_chain=True)
+    query_rows = read_jsonl(tmp_path / "web_evidence" / "queries.jsonl")
+    fallback_rows = [row for row in query_rows if row.get("query_strategy") == "broadened_fallback"]
+    audit_rows = read_jsonl(tmp_path / "audit_log.jsonl")
+
+    assert checks["ok"], checks
+    assert {row["lane"] for row in fallback_rows} == {"counterevidence", "freshness_supersession"}
+    assert all(row.get("fallback_for_query_id") for row in fallback_rows)
+    assert len([row for row in audit_rows if row.get("event_type") == "claim_search_zero_results"]) == 4
+    assert len(checks["accepted_zero_result_routes"]) == 2
+
+
+def test_counterevidence_broadened_timeout_fails_closed(tmp_path: Path) -> None:
+    providers = [_CleanZeroDDGS(fallback_status="transport_error"), _Direct()]
+    with patch("market_lab.web_evidence_runner.build_registry", lambda profile, include_optional: providers):
+        collect_for_claims(tmp_path, [{"claim_id": "claim-1", "text": "Example Corp revenue increased"}], mode="live", run_id="run")
+
+    checks = verify_run(tmp_path, require_counterevidence_coverage=True)
+    failed = [row for row in checks["coverage_blockers"] if row["type"].endswith("_failed")]
+
+    assert not checks["ok"]
+    assert {row["lane"] for row in failed} == {"counterevidence", "freshness_supersession"}
+    assert all(row["status"] == "transport_error" and row["typed_error"] == "timeout" for row in failed)
 
 
 def test_official_exact_resume_skips_provider_fetch_and_artifact_appends(tmp_path: Path) -> None:

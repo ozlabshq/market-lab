@@ -395,6 +395,7 @@ class DDGSProvider(ProviderBase):
         started = time.time()
         try:
             from ddgs import DDGS
+            from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException
 
             hits: list[SearchHit] = []
             raw_rows: list[dict[str, Any]] = []
@@ -429,7 +430,7 @@ class DDGSProvider(ProviderBase):
                         )
                     )
             raw_payload = str(raw_rows)
-            status = "success" if hits else "degraded"
+            status = "success" if hits else "zero_results"
             typed_error = "" if hits else "zero_results"
             return SearchResponse(
                 request_id=request.request_id,
@@ -452,6 +453,40 @@ class DDGSProvider(ProviderBase):
                 result_count=0,
                 latency_ms=int((time.time() - started) * 1000),
                 typed_error=f"missing ddgs dependency: {exc}",
+            )
+        except RatelimitException as exc:
+            return SearchResponse(
+                request_id=request.request_id,
+                query_id=request.query_id,
+                provider_id=self.provider_id,
+                status="rate_limited",
+                hits=[],
+                result_count=0,
+                latency_ms=int((time.time() - started) * 1000),
+                typed_error=str(exc) or "rate_limited",
+            )
+        except TimeoutException as exc:
+            return SearchResponse(
+                request_id=request.request_id,
+                query_id=request.query_id,
+                provider_id=self.provider_id,
+                status="transport_error",
+                hits=[],
+                result_count=0,
+                latency_ms=int((time.time() - started) * 1000),
+                typed_error=str(exc) or "timeout",
+            )
+        except DDGSException as exc:
+            clean_zero_results = type(exc) is DDGSException and str(exc).strip() == "No results found."
+            return SearchResponse(
+                request_id=request.request_id,
+                query_id=request.query_id,
+                provider_id=self.provider_id,
+                status="zero_results" if clean_zero_results else "transport_error",
+                hits=[],
+                result_count=0,
+                latency_ms=int((time.time() - started) * 1000),
+                typed_error="zero_results" if clean_zero_results else str(exc),
             )
         except Exception as exc:
             return SearchResponse(

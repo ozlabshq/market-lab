@@ -258,6 +258,8 @@ class SearchRequest:
     max_results: int = 8
     timeout_seconds: int = 20
     budget_reservation_id: str | None = None
+    query_strategy: str = "exact_claim"
+    fallback_for_query_id: str | None = None
 
 
 @dataclass(frozen=True)
