@@ -554,6 +554,59 @@ def add_evidence(
     _append_audit(run_dir, event="evidence_added", actor=actor, details={"claim_id": claim_id, "result": result})
 
 
+def run_web_evidence_research(
+    run_dir: Path,
+    *,
+    mode: str = "live",
+    profile: str = "keyless_standard",
+    owner: str = "web-evidence",
+    max_claims: int | None = None,
+) -> dict[str, Any]:
+    """Advance an extracted-claims run into audited web-evidence collection.
+
+    The acquisition layer appends candidate evidence/context only. It does not set
+    claim dispositions and keeps the run verdict IN_PROGRESS unless a reviewer
+    later adjudicates the claim set.
+    """
+
+    run_dir = Path(run_dir)
+    status = _load_status(run_dir)
+    if status.get("stage") == "finalized":
+        raise RuntimeError("finalized runs are immutable")
+    if RUN_STAGE_INDEX.get(status.get("stage", "created"), 0) < RUN_STAGE_INDEX["claims_extracted"]:
+        raise RuntimeError("claims must be extracted before web evidence research")
+
+    from .web_evidence_runner import collect_for_claims
+
+    claims = read_claims(run_dir).get("claims", [])
+    result = collect_for_claims(
+        run_dir,
+        claims,
+        profile=profile,
+        run_id=str(status.get("run_id") or run_dir.name),
+        mode=mode,
+        max_claims=max_claims,
+    )
+
+    status = _load_status(run_dir)
+    status["verdict"] = DEFAULT_VERDICT
+    status["web_evidence"] = {
+        "profile": profile,
+        "mode": mode,
+        "status": result.get("status"),
+        "claims": result.get("claims", 0),
+        "searches": result.get("searches", 0),
+        "fetches": result.get("fetches", 0),
+        "evidence_added": result.get("evidence_added", 0),
+        "updated_at": _now_iso(),
+    }
+    _write_json(_status_path(run_dir), status)
+    if RUN_STAGE_INDEX.get(status.get("stage", "created"), 0) < RUN_STAGE_INDEX["research_active"]:
+        _set_stage(run_dir, stage="research_active", owner=owner, actor=owner)
+    _append_audit(run_dir, event="web_evidence_research", actor=owner, details=result)
+    return result
+
+
 def _count_evidence(run_dir: Path) -> dict[str, dict[str, int]]:
     totals: dict[str, dict[str, int]] = {}
     evidence_path = _evidence_path(Path(run_dir))
@@ -807,6 +860,7 @@ __all__ = [
     "set_next_actions",
     "set_claim_disposition",
     "add_evidence",
+    "run_web_evidence_research",
     "set_media_interpretation",
     "write_independent_review",
     "finalize_run",
