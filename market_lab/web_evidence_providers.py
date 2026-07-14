@@ -710,7 +710,7 @@ class OptionalProvider(ProviderBase):
         super().__init__(
             provider_id=provider_id,
             provider_family=PROVIDER_FAMILY_WEB_INDEX,
-            capabilities=["search", "fetch"] if self.has_key else [],
+            capabilities=[],
             implementation_version="0.0.0",
             configuration_fields=[env_var],
             requires_managed_key=True,
@@ -723,9 +723,10 @@ class OptionalProvider(ProviderBase):
             return ProviderHealth(
                 provider_id=self.provider_id,
                 timestamp=utcnow(),
-                status="ready",
-                capabilities_ready=list(self.capabilities),
-                safe_message="ready",
+                status="disabled",
+                capabilities_ready=[],
+                reason_code="probe_not_implemented",
+                safe_message="configured but disabled until a safe health probe is implemented",
                 observed_endpoint=self.provider_id,
             )
         return ProviderHealth(
@@ -744,11 +745,11 @@ class OptionalProvider(ProviderBase):
             request_id=request.request_id,
             query_id=request.query_id,
             provider_id=self.provider_id,
-            status="unconfigured" if not self.has_key else "success",
+            status="unconfigured" if not self.has_key else "disabled",
             hits=[],
             result_count=0,
             latency_ms=0,
-            typed_error="missing-managed-key" if not self.has_key else "",
+            typed_error="missing-managed-key" if not self.has_key else "probe_not_implemented",
         )
 
     def fetch(self, request: FetchRequest, context: dict[str, Any] | None = None) -> FetchResponse:

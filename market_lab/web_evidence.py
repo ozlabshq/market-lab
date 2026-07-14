@@ -86,6 +86,7 @@ def audit_hash_payload(event: Mapping[str, Any]) -> dict[str, Any]:
     payload = dict(event)
     payload.pop("event_hash", None)
     payload.pop("event_id", None)
+    payload.pop("__raw_line", None)
     return payload
 
 

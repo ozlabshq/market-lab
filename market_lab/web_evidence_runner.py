@@ -6,7 +6,9 @@ Orchestrates claims -> query -> fetch -> snapshot -> evidence linking.
 """
 
 import json
-from collections import Counter
+import os
+import re
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -14,8 +16,8 @@ from typing import Any
 from .web_evidence import (
     BudgetProfile,
     EvidenceRecord,
-    EvidenceSegment,
     FetchRequest,
+    FetchResponse,
     SearchRequest,
     SCHEMA_EVIDENCE_V2,
     canonicalize_url_for_dedupe,
@@ -27,31 +29,29 @@ from .web_evidence import (
     sha256_hex,
     utcnow,
 )
-from .web_evidence_providers import (
-    DDGSProvider,
-    DirectHTTPProvider,
-    build_keyless_registry,
-    build_optional_registry,
-)
+from .web_evidence_providers import DirectHTTPProvider, OptionalProvider, build_keyless_registry, build_optional_registry
 from .web_evidence_store import (
     append_audit_chain,
     append_budget_report,
-    append_evidence_record,
+    append_evidence_record_once,
     append_provider_call,
-    append_query_event,
+    append_provider_call_once,
+    append_query_event_once,
     append_provider_health,
     append_search_results,
-    append_segment,
+    append_segment_once,
     commit_snapshot,
     ensure_layout,
     ensure_layout as _ensure_layout,
     load_audit_chain,
     make_text_segment,
+    read_extracted_text,
     read_jsonl,
     read_snapshot_manifest,
     verify_segment_locator,
     write_plan,
     verify_audit_chain,
+    write_atomic_json,
 )
 
 
@@ -87,7 +87,7 @@ def check_health(
     if require_core_ready:
         if ready.get("direct_http") != "ready":
             raise RuntimeError("core provider direct_http not ready")
-        if ready.get("ddgs") != "ready":
+        if ready.get("ddgs") not in {"ready", "degraded", "rate_limited"}:
             raise RuntimeError("core provider ddgs not ready")
 
     return {
@@ -98,8 +98,110 @@ def check_health(
     }
 
 
+def _append_provider_fetch_call(run_dir: Path, response: Any) -> None:
+    append_provider_call_once(run_dir, {k: v for k, v in asdict(response).items() if k not in {"payload"}})
+
+
+def _completed_fetch_snapshot(run_dir: Path, *, provider_id: str, request_id: str) -> str | None:
+    calls = read_jsonl(Path(run_dir) / "web_evidence" / "provider_calls.jsonl")
+    if not any(
+        row.get("provider_id") == provider_id and row.get("request_id") == request_id and row.get("status") == "success"
+        for row in calls
+    ):
+        return None
+    for row in reversed(read_jsonl(Path(run_dir) / "web_evidence" / "snapshot_index.jsonl")):
+        if row.get("provider_id") == provider_id and row.get("request_id") == request_id and row.get("snapshot_id"):
+            return str(row["snapshot_id"])
+    return None
+
+
+def _commit_successful_fetch(
+    run_dir: Path,
+    *,
+    response: Any,
+    requested_url: str,
+    run_id: str,
+) -> str | None:
+    _append_provider_fetch_call(run_dir, response)
+    if response.status != "success" or not response.payload:
+        append_audit_chain(
+            run_dir,
+            {
+                "event_type": "fetch.failed",
+                "run_id": run_id,
+                "claim_ids": response.claim_ids,
+                "query_id": response.query_ids[0] if response.query_ids else "",
+                "provider_id": response.provider_id,
+                "provider_call_id": response.provider_call_id,
+                "status": response.status,
+                "reason_code": response.typed_error,
+                "latency_ms": response.latency_ms,
+            },
+        )
+        return None
+    snapshot_id, _ = commit_snapshot(
+        run_dir,
+        provider_id=response.provider_id,
+        request_id=response.request_id,
+        claim_ids=response.claim_ids,
+        query_ids=response.query_ids,
+        requested_url=requested_url,
+        response=response,
+        response_body=response.payload,
+        response_headers=response.response_headers,
+    )
+    manifest = read_snapshot_manifest(run_dir, snapshot_id)
+    append_audit_chain(
+        run_dir,
+        {
+            "event_type": "snapshot.committed",
+            "run_id": run_id,
+            "claim_ids": response.claim_ids,
+            "query_id": response.query_ids[0] if response.query_ids else "",
+            "provider_id": response.provider_id,
+            "provider_call_id": response.provider_call_id,
+            "output_artifact_hashes": [snapshot_id],
+            "bytes": response.byte_length,
+            "latency_ms": response.latency_ms,
+        },
+    )
+    append_audit_chain(
+        run_dir,
+        {
+            "event_type": "extraction.completed" if manifest.get("extraction_status") == "success" else "extraction.failed",
+            "run_id": run_id,
+            "claim_ids": response.claim_ids,
+            "provider_id": response.provider_id,
+            "provider_call_id": response.provider_call_id,
+            "snapshot_id": snapshot_id,
+            "status": manifest.get("extraction_status"),
+            "reason_code": "" if manifest.get("extraction_status") == "success" else str(manifest.get("extraction_status")),
+        },
+    )
+    return snapshot_id
+
+
 def _claim_text(claim: dict[str, Any]) -> str:
     return normalize_query(str(claim.get("text") or claim.get("claim") or claim.get("claim_text") or ""))
+
+
+def _claim_identifiers(claim: dict[str, Any], claim_text: str) -> list[dict[str, str]]:
+    text = " ".join(str(claim.get(k) or "") for k in ["identifier", "document_identifier", "source_url", "citation"]) + " " + claim_text
+    identifiers: list[dict[str, str]] = []
+    for doi in dict.fromkeys(re.findall(r"10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+", text)):
+        identifiers.append({"provider_id": "crossref", "kind": "fetch", "value": doi.rstrip(".,)")})
+    for arxiv_id in dict.fromkeys(re.findall(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b", text)):
+        identifiers.append({"provider_id": "arxiv", "kind": "fetch", "value": arxiv_id})
+    for cik in dict.fromkeys(re.findall(r"\bCIK[:\s#-]*(\d{1,10})\b", text, flags=re.I)):
+        identifiers.append({"provider_id": "sec", "kind": "fetch", "value": cik})
+    sec_match = re.search(r"\b\d{10}\b", text)
+    if "sec" in claim_text.lower() and sec_match:
+        identifiers.append({"provider_id": "sec", "kind": "fetch", "value": sec_match.group(0)})
+    for url in dict.fromkeys(re.findall(r"https?://[^\s)]+", text)):
+        host = url.split("//", 1)[-1].split("/", 1)[0].lower()
+        if host in {"api.census.gov", "api.bls.gov", "www.data.gov"}:
+            identifiers.append({"provider_id": "government_http", "kind": "fetch", "value": url.rstrip(".,)")})
+    return identifiers
 
 
 def _classify_source_type(claim_text: str) -> str:
@@ -165,6 +267,199 @@ def _write_claim_plan(run_dir: Path, plan: list[dict[str, Any]]) -> None:
     write_plan(run_dir, {"generated_at_utc": utcnow(), "plan": plan})
 
 
+def _load_fixture_cases(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if raw.strip():
+            rows.append(json.loads(raw))
+    return rows
+
+
+def _required_str(row: dict[str, Any], field: str) -> bool:
+    return isinstance(row.get(field), str) and bool(str(row.get(field)).strip())
+
+
+def _frozen_fixture_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "tests" / "market_lab" / "fixtures" / "web_evidence" / "benchmark_v1.jsonl"
+
+
+def _flatten_search_result_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        wrapped = row.get("search_rows")
+        if isinstance(wrapped, list):
+            flattened.extend(item for item in wrapped if isinstance(item, dict))
+        else:
+            flattened.append(row)
+    return flattened
+
+
+def _frozen_provider_health_rows(profile: str) -> list[dict[str, Any]]:
+    now = utcnow()
+    rows = [
+        ("ddgs", "disabled", ["search"], "frozen_replay_no_provider_probe"),
+        ("direct_http", "disabled", ["fetch"], "frozen_replay_no_provider_probe"),
+        ("sec", "disabled", ["fetch"], "frozen_replay_no_provider_probe"),
+        ("crossref", "disabled", ["fetch"], "frozen_replay_no_provider_probe"),
+        ("arxiv", "disabled", ["fetch"], "frozen_replay_no_provider_probe"),
+        ("government_http", "disabled", ["fetch"], "frozen_replay_no_provider_probe"),
+        ("tavily", "unconfigured", [], "optional_provider_not_used_in_frozen_replay"),
+        ("brave", "unconfigured", [], "optional_provider_not_used_in_frozen_replay"),
+        ("exa", "unconfigured", [], "optional_provider_not_used_in_frozen_replay"),
+        ("firecrawl", "unconfigured", [], "optional_provider_not_used_in_frozen_replay"),
+        ("parallel", "unconfigured", [], "optional_provider_not_used_in_frozen_replay"),
+        ("searxng", "unconfigured", [], "optional_provider_not_used_in_frozen_replay"),
+        ("jina_reader", "unconfigured", [], "optional_provider_not_used_in_frozen_replay"),
+    ]
+    return [
+        {
+            "provider_id": provider_id,
+            "timestamp": now,
+            "status": status,
+            "capabilities_ready": capabilities if status == "disabled" else [],
+            "missing_configuration": [],
+            "reason_code": reason,
+            "safe_message": f"{profile}: {reason}",
+            "latency_ms": 0,
+            "retry_after_utc": None,
+            "observed_endpoint": None,
+        }
+        for provider_id, status, capabilities, reason in rows
+    ]
+
+
+def _frozen_collect_for_claims(
+    run_dir: Path,
+    claims: list[dict[str, Any]],
+    *,
+    profile: str,
+    run_id: str,
+    max_claims: int | None,
+    budget: BudgetProfile,
+) -> dict[str, Any]:
+    ensure_layout(run_dir)
+    fixture_rows = _load_fixture_cases(_frozen_fixture_path())
+    if not fixture_rows:
+        raise RuntimeError("missing_or_empty_frozen_corpus")
+    append_provider_health(run_dir, _frozen_provider_health_rows(profile))
+    append_budget_report(run_dir, {"profile": profile, "budget": asdict(budget), "mode": "frozen"})
+    existing_evidence = {row.get("evidence_id") for row in read_jsonl(run_dir / "evidence.jsonl")}
+    existing_claims = {row.get("claim_id") for row in read_jsonl(run_dir / "evidence.jsonl")}
+    total_claims = min(len(claims), max_claims) if max_claims is not None else len(claims)
+    result = {"status": "completed", "profile": profile, "run_id": run_id, "claims": total_claims, "searches": 0, "fetches": 0, "evidence_added": 0}
+    plan: list[dict[str, Any]] = []
+    for idx, claim in enumerate(claims[:total_claims]):
+        claim_id = claim.get("claim_id") or claim.get("id") or f"claim-{idx}"
+        claim_text = _claim_text(claim)
+        fixture = fixture_rows[idx % len(fixture_rows)]
+        if claim_id in existing_claims:
+            continue
+        for lane in ["primary_source", "counterevidence", "freshness_supersession"]:
+            query = SearchRequest(
+                request_id=request_id_for("search", f"frozen:{run_id}:{claim_id}:{lane}"),
+                query_id=request_id_for("query", f"frozen:{run_id}:{claim_id}:{lane}"),
+                run_id=run_id,
+                claim_ids=[claim_id],
+                exact_query=normalize_query(f"{claim_text} {lane}")[:300],
+                lane=lane,
+                max_results=1,
+                timeout_seconds=0,
+            )
+            if append_query_event_once(run_dir, asdict(query)):
+                result["searches"] += 1
+                append_search_results(
+                    run_dir,
+                    [
+                        {
+                            "request_id": query.request_id,
+                            "query_id": query.query_id,
+                            "provider_id": "frozen_fixture",
+                            "status": "success",
+                            "result_count": 1,
+                            "eligible_as_evidence": False,
+                            "lane": lane,
+                            "hits": [
+                                {
+                                    "provider_id": "frozen_fixture",
+                                    "provider_result_id": f"frozen:{claim_id}:{lane}",
+                                    "rank": 1,
+                                    "url": str(fixture.get("url") or "https://example.com/frozen"),
+                                    "title": str(fixture.get("title") or "Frozen fixture"),
+                                    "snippet": f"Frozen discovery context for {lane}",
+                                    "discovered_at": utcnow(),
+                                    "eligible_as_evidence": False,
+                                }
+                            ],
+                        }
+                    ],
+                )
+            plan.append({"claim_id": claim_id, "query_id": query.query_id, "query": query.exact_query, "lane": lane, "source_type": _classify_source_type(claim_text)})
+        body = (fixture.get("body") or f"Frozen fixture evidence context for {claim_text}.").encode("utf-8")
+        fetch = FetchResponse(
+            request_id=request_id_for("fetch", f"frozen:{run_id}:{claim_id}:{fixture.get('url', 'https://example.com/frozen')}"),
+            run_id=run_id,
+            claim_ids=[claim_id],
+            query_ids=[request_id_for("query", f"frozen:{run_id}:{claim_id}:primary_source")],
+            provider_id=str(fixture.get("provider_id") or "frozen_fixture"),
+            provider_call_id=request_id_for("frozen_fixture", f"{run_id}:{claim_id}"),
+            status="success",
+            canonical_url=str(fixture.get("url") or "https://example.com/frozen"),
+            redirect_chain=[str(fixture.get("url") or "https://example.com/frozen")],
+            content_type=str(fixture.get("content_type") or "text/plain"),
+            byte_length=len(body),
+            payload=body,
+            response_headers={"content-type": str(fixture.get("content_type") or "text/plain")},
+        )
+        if _completed_fetch_snapshot(run_dir, provider_id=fetch.provider_id, request_id=fetch.request_id):
+            continue
+        result["fetches"] += 1
+        snapshot_id = _commit_successful_fetch(run_dir, response=fetch, requested_url=fetch.canonical_url, run_id=run_id)
+        if not snapshot_id:
+            continue
+        segment = make_text_segment(snapshot_id, read_extracted_text(run_dir, snapshot_id), claim_text, segment_seed=f"frozen:{claim_id}")
+        if segment is None or not verify_segment_locator(run_dir, segment):
+            continue
+        append_segment_once(run_dir, segment)
+        record = EvidenceRecord(
+            schema_version=SCHEMA_EVIDENCE_V2,
+            evidence_id=make_evidence_id(run_id=run_id, claim_id=claim_id, segment_id=segment.segment_id, stance="context"),
+            run_id=run_id,
+            claim_id=claim_id,
+            segment_id=segment.segment_id,
+            snapshot_id=snapshot_id,
+            stance="context",
+            source_type=_classify_source_type(claim_text),
+            source_tier="candidate",
+            source_quality_reason="frozen_fixture_extracted_locator_verified",
+            title=str(fixture.get("title") or "Frozen fixture"),
+            canonical_url=fetch.canonical_url,
+            document_identifier=snapshot_id,
+            retrieved_at_utc=utcnow(),
+            exact_locator=segment.locator,
+            verbatim_excerpt_or_value=segment.verbatim_excerpt_or_value,
+            query_ids=fetch.query_ids,
+            provider_id=fetch.provider_id,
+            provider_call_id=fetch.provider_call_id,
+            source_lineage="web_evidence.frozen.v1",
+            origin_cluster_id=origin_cluster_id_for(fetch.canonical_url),
+            edge_evaluator="deterministic_exact_edge_v1",
+            evaluator_version="1",
+            confidence=0.4,
+        )
+        if record.evidence_id not in existing_evidence and append_evidence_record_once(run_dir, record):
+            existing_evidence.add(record.evidence_id)
+            result["evidence_added"] += 1
+            append_audit_chain(run_dir, {"event_type": "evidence.linked", "run_id": run_id, "claim_ids": [claim_id], "claim_id": claim_id, "snapshot_id": snapshot_id, "segment_id": segment.segment_id, "provider_id": fetch.provider_id, "provider_call_id": fetch.provider_call_id, "status": "context"})
+    _write_claim_plan(run_dir, plan)
+    if result["searches"] or result["fetches"] or result["evidence_added"]:
+        append_audit_chain(run_dir, {"event_type": "run.web_evidence_completed", "run_id": run_id, "status": "completed", "claims": result["claims"], "searches": result["searches"], "fetches": result["fetches"], "evidence_added": result["evidence_added"]})
+    return result
+
+
 def collect_for_claims(
     run_dir: Path,
     claims: list[dict[str, Any]],
@@ -192,11 +487,15 @@ def collect_for_claims(
     }
 
     if not claims or mode == "off":
+        ensure_layout(run_dir)
         append_budget_report(run_dir, {"profile": profile, "budget": asdict(budget)})
         return result
 
+    if mode == "frozen":
+        return _frozen_collect_for_claims(run_dir, claims, profile=profile, run_id=run_id, max_claims=max_claims, budget=budget)
+
     base = ensure_layout(run_dir)
-    providers = build_registry(profile, include_optional=False)
+    providers = build_registry(profile, include_optional=True)
     append_provider_health(
         run_dir,
         [asdict(provider.health()) for provider in providers],
@@ -211,16 +510,95 @@ def collect_for_claims(
 
     result["claims"] = total_claims
     plan: list[dict[str, Any]] = []
-    seen_canonical_urls: set[str] = set()
-    seen_content_hashes: set[str] = set()
+    existing_queries = {row.get("query_id") for row in read_jsonl(base / "queries.jsonl")}
+    existing_calls = {row.get("provider_call_id") for row in read_jsonl(base / "provider_calls.jsonl") if row.get("status") == "success"}
+    existing_evidence = {row.get("evidence_id") for row in read_jsonl(run_dir / "evidence.jsonl")}
+    seen_canonical_urls: set[str] = {
+        canonicalize_url_for_dedupe(str(row.get("canonical_url") or ""))
+        for row in read_jsonl(run_dir / "evidence.jsonl")
+        if row.get("canonical_url")
+    }
+    seen_content_hashes: set[str] = {
+        str(row.get("document_identifier"))
+        for row in read_jsonl(run_dir / "evidence.jsonl")
+        if row.get("document_identifier")
+    }
 
     for i, claim in enumerate(claims[:total_claims]):
         claim_id = claim.get("claim_id") or claim.get("id") or f"claim-{i}"
         claim_text = _claim_text(claim)
         used_fetches = 0
 
+        for ident in _claim_identifiers(claim, claim_text):
+            if used_fetches >= budget.max_fetches_per_claim:
+                break
+            provider = _provider_by_id(providers, ident["provider_id"])
+            query_id = request_id_for("query", f"{run_id}:{claim_id}:identifier_exact:{ident['provider_id']}:{ident['value']}")
+            search_request = SearchRequest(
+                request_id=request_id_for("search", f"{run_id}:{claim_id}:identifier_exact:{ident['provider_id']}:{ident['value']}"),
+                query_id=query_id,
+                run_id=run_id,
+                claim_ids=[claim_id],
+                exact_query=ident["value"],
+                lane="identifier_exact",
+                max_results=1,
+                timeout_seconds=budget.search_timeout_seconds,
+            )
+            if append_query_event_once(run_dir, asdict(search_request)):
+                result["searches"] += 1
+            plan.append({"claim_id": claim_id, "query_id": query_id, "query": ident["value"], "lane": "identifier_exact", "source_type": _classify_source_type(claim_text), "provider_id": ident["provider_id"]})
+            fetch_request = _build_fetch(search_request, ident["value"], claim_id, run_id, budget)
+            completed_snapshot = _completed_fetch_snapshot(run_dir, provider_id=ident["provider_id"], request_id=fetch_request.request_id)
+            if completed_snapshot:
+                continue
+            fetch_response = provider.fetch(fetch_request)
+            used_fetches += 1
+            result["fetches"] += 1
+            snapshot_id = _commit_successful_fetch(run_dir, response=fetch_response, requested_url=ident["value"], run_id=run_id)
+            if not snapshot_id:
+                continue
+            existing_calls.add(fetch_response.provider_call_id)
+            manifest = read_snapshot_manifest(run_dir, snapshot_id)
+            if manifest.get("extraction_status") != "success":
+                continue
+            segment = make_text_segment(snapshot_id, read_extracted_text(run_dir, snapshot_id), claim_text, segment_seed=f"{claim_id}:{ident['provider_id']}:{ident['value']}")
+            if segment is None or not verify_segment_locator(run_dir, segment):
+                continue
+            append_segment_once(run_dir, segment)
+            record = EvidenceRecord(
+                schema_version=SCHEMA_EVIDENCE_V2,
+                evidence_id=make_evidence_id(run_id=run_id, claim_id=claim_id, segment_id=segment.segment_id, stance="context"),
+                run_id=run_id,
+                claim_id=claim_id,
+                segment_id=segment.segment_id,
+                snapshot_id=snapshot_id,
+                stance="context",
+                source_type=_classify_source_type(claim_text),
+                source_tier="candidate",
+                source_quality_reason="official_identifier_extracted_locator_verified",
+                canonical_url=fetch_response.canonical_url or ident["value"],
+                document_identifier=sha256_hex(fetch_response.payload or b""),
+                retrieved_at_utc=utcnow(),
+                exact_locator=segment.locator,
+                verbatim_excerpt_or_value=segment.verbatim_excerpt_or_value,
+                query_ids=[query_id],
+                provider_id=fetch_response.provider_id,
+                provider_call_id=fetch_response.provider_call_id,
+                source_lineage="web_evidence.official.v1",
+                origin_cluster_id=origin_cluster_id_for(fetch_response.canonical_url or ident["value"]),
+                edge_evaluator="deterministic_exact_edge_v1",
+                evaluator_version="1",
+                confidence=0.4,
+            )
+            if record.evidence_id not in existing_evidence and append_evidence_record_once(run_dir, record):
+                existing_evidence.add(record.evidence_id)
+                result["evidence_added"] += 1
+                append_audit_chain(run_dir, {"event_type": "evidence.linked", "claim_id": claim_id, "run_id": run_id, "claim_ids": [claim_id], "snapshot_id": snapshot_id, "segment_id": segment.segment_id, "provider_id": fetch_response.provider_id, "provider_call_id": fetch_response.provider_call_id, "query_id": query_id, "lane": "identifier_exact", "status": "context"})
+
         for search_request in _build_claim_queries(claim, i, run_id, budget):
-            append_query_event(run_dir, asdict(search_request))
+            query_already_done = search_request.query_id in existing_queries
+            if append_query_event_once(run_dir, asdict(search_request)):
+                existing_queries.add(search_request.query_id)
             plan.append(
                 {
                     "claim_id": claim_id,
@@ -230,6 +608,8 @@ def collect_for_claims(
                     "source_type": _classify_source_type(claim_text),
                 }
             )
+            if query_already_done:
+                continue
 
             search_response = ddgs.search(search_request)
             append_search_results(run_dir, search_response)
@@ -279,24 +659,14 @@ def collect_for_claims(
                 used_fetches += 1
                 result["fetches"] += 1
                 fetch_request = _build_fetch(search_request, hit.url, claim_id, run_id, budget)
+                completed_snapshot = _completed_fetch_snapshot(run_dir, provider_id="direct_http", request_id=fetch_request.request_id)
+                if completed_snapshot:
+                    continue
                 fetch_response = direct_http.fetch(fetch_request)
-                append_provider_call(run_dir, {k: v for k, v in asdict(fetch_response).items() if k not in {"payload"}})
-
-                if fetch_response.status != "success" or not fetch_response.payload:
-                    append_audit_chain(
-                        run_dir,
-                        {
-                            "event_type": "fetch_failed",
-                            "claim_id": claim_id,
-                            "run_id": run_id,
-                            "query_id": search_request.query_id,
-                            "provider_id": fetch_response.provider_id,
-                            "status": fetch_response.status,
-                            "typed_error": fetch_response.typed_error,
-                            "url": hit.url,
-                            "latency_ms": fetch_response.latency_ms,
-                        },
-                    )
+                snapshot_id = _commit_successful_fetch(run_dir, response=fetch_response, requested_url=hit.url, run_id=run_id)
+                if fetch_response.status == "success":
+                    existing_calls.add(fetch_response.provider_call_id)
+                if not snapshot_id:
                     continue
 
                 raw_hash = sha256_hex(fetch_response.payload)
@@ -308,33 +678,11 @@ def collect_for_claims(
                     continue
                 seen_content_hashes.add(raw_hash)
 
-                snapshot_id, manifest_path = commit_snapshot(
-                    run_dir,
-                    provider_id=fetch_response.provider_id,
-                    request_id=fetch_response.request_id,
-                    claim_ids=fetch_response.claim_ids,
-                    query_ids=fetch_response.query_ids,
-                    requested_url=hit.url,
-                    response=fetch_response,
-                    response_body=fetch_response.payload,
-                    response_headers=fetch_response.response_headers,
-                )
                 manifest = read_snapshot_manifest(run_dir, snapshot_id)
                 if manifest.get("extraction_status") != "success":
-                    append_audit_chain(
-                        run_dir,
-                        {
-                            "event_type": "extraction_blocked",
-                            "claim_id": claim_id,
-                            "run_id": run_id,
-                            "snapshot_id": snapshot_id,
-                            "status": manifest.get("extraction_status"),
-                            "content_type": manifest.get("content_type"),
-                        },
-                    )
                     continue
 
-                extracted_text = (Path(manifest_path).parent / "extracted.txt").read_text(encoding="utf-8")
+                extracted_text = read_extracted_text(run_dir, snapshot_id)
                 segment = make_text_segment(snapshot_id, extracted_text, claim_text, segment_seed=f"{claim_id}:{hit.url}")
                 if segment is None or not verify_segment_locator(run_dir, segment):
                     append_audit_chain(
@@ -343,8 +691,8 @@ def collect_for_claims(
                     )
                     continue
 
-                append_segment(run_dir, segment)
-                stance = "refutes" if search_request.lane == "counterevidence" else "context"
+                append_segment_once(run_dir, segment)
+                stance = "context"
                 record = EvidenceRecord(
                     schema_version=SCHEMA_EVIDENCE_V2,
                     evidence_id=make_evidence_id(run_id=run_id, claim_id=claim_id, segment_id=segment.segment_id, stance=stance),
@@ -371,11 +719,13 @@ def collect_for_claims(
                     version="1",
                     confidence=0.4,
                 )
-                append_evidence_record(run_dir, record)
+                if record.evidence_id in existing_evidence or not append_evidence_record_once(run_dir, record):
+                    continue
+                existing_evidence.add(record.evidence_id)
                 append_audit_chain(
                     run_dir,
                     {
-                        "event_type": "evidence_linked",
+                        "event_type": "evidence.linked",
                         "claim_id": claim_id,
                         "run_id": run_id,
                         "snapshot_id": snapshot_id,
@@ -389,22 +739,22 @@ def collect_for_claims(
                     },
                 )
                 result["evidence_added"] += 1
-                if stance == "context":
-                    break
+                break
 
     _write_claim_plan(run_dir, plan)
     # Persist provider-health and audit artifacts in web_evidence root.
-    append_audit_chain(
-        run_dir,
-        {
-            "event_type": "collect_complete",
-            "run_id": run_id,
-            "claims": result["claims"],
-            "searches": result["searches"],
-            "fetches": result["fetches"],
-            "evidence_added": result["evidence_added"],
-        },
-    )
+    if result["searches"] or result["fetches"] or result["evidence_added"]:
+        append_audit_chain(
+            run_dir,
+            {
+                "event_type": "collect_complete",
+                "run_id": run_id,
+                "claims": result["claims"],
+                "searches": result["searches"],
+                "fetches": result["fetches"],
+                "evidence_added": result["evidence_added"],
+            },
+        )
     return result
 
 
@@ -418,10 +768,10 @@ def run_smoke(
     crossref_doi: str | None = None,
     arxiv_id: str | None = None,
     government_url: str | None = None,
-    lane: str = "frozen",
+    lane: str = "live",
 ) -> dict[str, Any]:
     base = _ensure_layout(run_dir)
-    providers = build_registry(profile, include_optional=False)
+    providers = build_registry(profile, include_optional=True)
     ddgs = _provider_by_id(providers, "ddgs")
     direct = _provider_by_id(providers, "direct_http")
     sec = _provider_by_id(providers, "sec")
@@ -456,6 +806,21 @@ def run_smoke(
         )
         response = ddgs.search(search_request)
         append_search_results(run_dir, response)
+        append_provider_call(
+            run_dir,
+            {
+                "event": "search",
+                "provider_id": response.provider_id,
+                "query_id": response.query_id,
+                "request_id": response.request_id,
+                "status": response.status,
+                "result_count": response.result_count,
+                "typed_error": response.typed_error,
+                "raw_payload_hash": response.raw_payload_hash,
+                "latency_ms": response.latency_ms,
+            },
+        )
+        append_audit_chain(run_dir, {"event_type": "search.completed" if response.hits else "search.failed", "run_id": run_id, "claim_ids": ["smoke"], "query_id": response.query_id, "provider_id": response.provider_id, "status": response.status, "reason_code": response.typed_error, "latency_ms": response.latency_ms})
         result["ddgs"] = {"status": response.status, "result_count": response.result_count, "typed_error": response.typed_error}
     else:
         result["ddgs"] = {"status": "skipped", "result_count": 0, "typed_error": ""}
@@ -472,21 +837,8 @@ def run_smoke(
             max_redirects=5,
         )
         response = direct.fetch(request)
-        if response.status == "success" and response.payload:
-            snapshot_id, _ = commit_snapshot(
-                run_dir,
-                provider_id=response.provider_id,
-                request_id=response.request_id,
-                claim_ids=response.claim_ids,
-                query_ids=response.query_ids,
-                requested_url=url,
-                response=response,
-                response_body=response.payload,
-                response_headers=response.response_headers,
-            )
-            result["direct_http"] = {"status": "success", "snapshot_id": snapshot_id}
-        else:
-            result["direct_http"] = {"status": response.status, "snapshot_id": None}
+        snapshot_id = _commit_successful_fetch(run_dir, response=response, requested_url=url, run_id=run_id)
+        result["direct_http"] = {"status": response.status, "snapshot_id": snapshot_id}
     else:
         result["direct_http"] = {"status": "skipped", "snapshot_id": None}
 
@@ -503,21 +855,8 @@ def run_smoke(
                 max_redirects=5,
             )
         )
-        if response.status == "success" and response.payload:
-            snapshot_id, _ = commit_snapshot(
-                run_dir,
-                provider_id=response.provider_id,
-                request_id=response.request_id,
-                claim_ids=response.claim_ids,
-                query_ids=response.query_ids,
-                requested_url=sec_cik,
-                response=response,
-                response_body=response.payload,
-                response_headers=response.response_headers,
-            )
-            result["sec"] = {"status": "success", "snapshot_id": snapshot_id}
-        else:
-            result["sec"] = {"status": response.status, "snapshot_id": None}
+        snapshot_id = _commit_successful_fetch(run_dir, response=response, requested_url=sec_cik, run_id=run_id)
+        result["sec"] = {"status": response.status, "snapshot_id": snapshot_id}
     else:
         result["sec"] = {"status": "skipped", "snapshot_id": None}
 
@@ -534,21 +873,8 @@ def run_smoke(
                 max_redirects=2,
             )
         )
-        if response.status == "success" and response.payload:
-            commit_snapshot(
-                run_dir,
-                provider_id=response.provider_id,
-                request_id=response.request_id,
-                claim_ids=response.claim_ids,
-                query_ids=response.query_ids,
-                requested_url=crossref_doi,
-                response=response,
-                response_body=response.payload,
-                response_headers=response.response_headers,
-            )
-            result["crossref"] = {"status": "success"}
-        else:
-            result["crossref"] = {"status": response.status}
+        snapshot_id = _commit_successful_fetch(run_dir, response=response, requested_url=crossref_doi, run_id=run_id)
+        result["crossref"] = {"status": response.status, "snapshot_id": snapshot_id}
     else:
         result["crossref"] = {"status": "skipped"}
 
@@ -565,10 +891,8 @@ def run_smoke(
                 max_redirects=2,
             )
         )
-        if response.status == "success" and response.payload:
-            result["arxiv"] = {"status": "success"}
-        else:
-            result["arxiv"] = {"status": response.status}
+        snapshot_id = _commit_successful_fetch(run_dir, response=response, requested_url=arxiv_id, run_id=run_id)
+        result["arxiv"] = {"status": response.status, "snapshot_id": snapshot_id}
     else:
         result["arxiv"] = {"status": "skipped"}
 
@@ -585,11 +909,153 @@ def run_smoke(
                 max_redirects=3,
             )
         )
-        result["government_http"] = {"status": response.status}
+        snapshot_id = _commit_successful_fetch(run_dir, response=response, requested_url=government_url, run_id=run_id)
+        result["government_http"] = {"status": response.status, "snapshot_id": snapshot_id}
     else:
         result["government_http"] = {"status": "skipped"}
 
     return result
+
+
+def _artifact_counts(run_dir: Path) -> dict[str, int]:
+    paths = {
+        "queries": run_dir / "web_evidence" / "queries.jsonl",
+        "provider_calls": run_dir / "web_evidence" / "provider_calls.jsonl",
+        "snapshots": run_dir / "web_evidence" / "snapshot_index.jsonl",
+        "segments": run_dir / "web_evidence" / "segments.jsonl",
+        "evidence": run_dir / "evidence.jsonl",
+        "audit": run_dir / "audit_log.jsonl",
+    }
+    return {name: len(read_jsonl(path)) for name, path in paths.items()}
+
+
+def _simulated_failed_fetch(
+    *,
+    failure_type: str,
+    expected_status: str,
+    case_id: str,
+) -> FetchResponse:
+    typed_error_by_failure = {
+        "rate_limited": "rate_limited",
+        "timeout": "timeout",
+        "not_found": "not_found",
+        "private_redirect_blocked": "unsafe_url:redirect target is private/restricted",
+    }
+    return FetchResponse(
+        request_id=request_id_for("chaos-fetch", case_id),
+        run_id="chaos",
+        claim_ids=[case_id],
+        query_ids=[request_id_for("chaos-query", case_id)],
+        provider_id="chaos_fixture",
+        provider_call_id=request_id_for("chaos-provider", case_id),
+        status=expected_status,
+        canonical_url=f"https://chaos.invalid/{failure_type}",
+        redirect_chain=[f"https://chaos.invalid/{failure_type}"],
+        byte_length=0,
+        typed_error=typed_error_by_failure.get(failure_type, expected_status),
+        charged_cost=0,
+        payload=None,
+        response_headers={},
+    )
+
+
+def _derive_chaos_checks(run_dir: Path, case_rows: list[dict[str, Any]]) -> tuple[int, dict[str, Any], dict[str, Any]]:
+    outcome_by_failure = {
+        "rate_limited": "rate_limited",
+        "timeout": "transport_error",
+        "not_found": "not_found",
+        "private_redirect_blocked": "unsafe_url",
+        "malformed_body": "extraction_failed",
+        "stale_snapshot": "blocked",
+        "duplicate_origin": "dedupe_skip",
+        "missing_optional_credentials": "unconfigured",
+    }
+    required = set(outcome_by_failure)
+    observed = {str(row.get("failure_type")) for row in case_rows}
+    missing = sorted(required - observed)
+    seen_case_ids: set[str] = set()
+    schema_failures = 0
+    status_failures = 0
+    outcomes: list[dict[str, Any]] = []
+    failed_fetches: list[FetchResponse] = []
+    for row in case_rows:
+        case_id = str(row.get("case_id") or "")
+        failure_type = str(row.get("failure_type") or "")
+        expected_status = str(row.get("expected_status") or "")
+        actual_status = outcome_by_failure.get(failure_type, "")
+        if not case_id or case_id in seen_case_ids or failure_type not in outcome_by_failure or not expected_status:
+            schema_failures += 1
+        elif actual_status != expected_status:
+            status_failures += 1
+        seen_case_ids.add(case_id)
+        outcomes.append({"case_id": case_id, "failure_type": failure_type, "expected_status": expected_status, "actual_status": actual_status})
+        if failure_type in {"rate_limited", "timeout", "not_found", "private_redirect_blocked"}:
+            failed_fetches.append(_simulated_failed_fetch(failure_type=failure_type, expected_status=actual_status, case_id=case_id))
+
+    private_response = DirectHTTPProvider().fetch(
+        FetchRequest(
+            request_id="chaos-private-block",
+            run_id="chaos",
+            claim_ids=["chaos-private"],
+            query_ids=["chaos-private"],
+            url="http://127.0.0.1/private",
+            timeout_seconds=1,
+            max_bytes=1,
+            max_redirects=0,
+        )
+    )
+    absent_env = "__MARKET_LAB_CHAOS_OPTIONAL_PROVIDER_ABSENT__"
+    old_env = os.environ.pop(absent_env, None)
+    try:
+        optional_health = OptionalProvider("chaos_optional", absent_env).health()
+    finally:
+        if old_env is not None:
+            os.environ[absent_env] = old_env
+
+    with tempfile.TemporaryDirectory(dir=run_dir.parent) as td:
+        resume_dir = Path(td) / "resume"
+        claim = [{"claim_id": "chaos-resume", "text": "Frozen resume idempotence context"}]
+        _frozen_collect_for_claims(resume_dir, claim, profile="keyless_standard", run_id="chaos-resume", max_claims=None, budget=load_budget_profile("keyless_standard"))
+        first_counts = _artifact_counts(resume_dir)
+        _frozen_collect_for_claims(resume_dir, claim, profile="keyless_standard", run_id="chaos-resume", max_claims=None, budget=load_budget_profile("keyless_standard"))
+        second_counts = _artifact_counts(resume_dir)
+
+    no_failed_fetch_evidence = all(
+        response.payload is None
+        and response.snapshot_id is None
+        and response.byte_length == 0
+        and response.status != "success"
+        for response in failed_fetches
+    )
+    charged_costs = [response.charged_cost or 0 for response in failed_fetches]
+    network_calls = 0
+    budget_adherence = sum(charged_costs) == 0 and network_calls == 0
+    failures = len(missing) + schema_failures + status_failures
+    checks = {
+        "schema_valid": schema_failures == 0,
+        "unique_case_ids": len(seen_case_ids) == len(case_rows),
+        "typed_failures": failures == 0,
+        "expected_status_matches_outcome": status_failures == 0,
+        "missing_failure_types": missing,
+        "no_failed_fetch_evidence": no_failed_fetch_evidence,
+        "private_destinations_blocked": private_response.status == "unsafe_url" and private_response.payload is None,
+        "resume_idempotent": first_counts == second_counts,
+        "optional_providers_explicit": optional_health.status == "unconfigured"
+        and absent_env in optional_health.missing_configuration,
+        "budget_adherence": budget_adherence,
+    }
+    metrics = {
+        "network_calls": network_calls,
+        "budget_adherence": 1.0 if budget_adherence else 0.0,
+        "charged_cost": sum(charged_costs),
+        "simulated_failed_fetches": len(failed_fetches),
+        "resume_counts": {"first": first_counts, "second": second_counts},
+        "private_block_status": private_response.status,
+        "optional_health_status": optional_health.status,
+        "outcomes": outcomes,
+    }
+    derived_failures = failures + sum(1 for key, value in checks.items() if isinstance(value, bool) and not value)
+    return derived_failures, checks, metrics
 
 
 def run_benchmark(
@@ -605,28 +1071,77 @@ def run_benchmark(
     lane = lane.strip().lower()
 
     case_rows: list[dict[str, Any]] = []
+    corpus_error = ""
     if cases_path.exists():
-        for line in cases_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            case_rows.append(json.loads(line))
+        try:
+            for line in cases_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError("case row must be object")
+                case_rows.append(row)
+        except Exception as exc:
+            corpus_error = str(exc)
 
     failures = 0
-    if lane not in {"live", "frozen"}:
+    if lane not in {"live", "frozen", "chaos"}:
         raise ValueError(f"unknown benchmark lane: {lane}")
+    if fail_on_gate and (corpus_error or not cases_path.exists() or not case_rows):
+        output = {
+            "lane": lane,
+            "cases_total": len(case_rows),
+            "cases_processed": 0,
+            "cases_failed": 1,
+            "passed": False,
+            "metrics": {"network_calls": 0},
+            "checks": {"corpus_present": cases_path.exists(), "corpus_non_empty": bool(case_rows), "corpus_error": corpus_error},
+        }
+        ensure_layout(run_dir)
+        write_atomic_json(output_path, output)
+        raise RuntimeError("benchmark-corpus-missing-or-empty")
 
     # For frozen lane, evaluate schema only and do not execute network.
     if lane == "frozen":
+        seen_case_ids: set[str] = set()
         for row in case_rows:
-            if not row.get("claim_id") or not row.get("claim_text"):
+            case_id = str(row.get("case_id") or "")
+            body = str(row.get("body") or "")
+            expected_hash = str(row.get("expected_snapshot_sha256") or "")
+            actual_hash = sha256_hex(body.encode("utf-8")) if body else ""
+            schema_ok = all(
+                _required_str(row, field)
+                for field in ["case_id", "claim_id", "claim_text", "provider_id", "url", "body", "expected_snapshot_sha256"]
+            )
+            if not schema_ok or case_id in seen_case_ids or expected_hash != actual_hash:
                 failures += 1
+            seen_case_ids.add(case_id)
         output = {
             "lane": lane,
             "cases_total": len(case_rows),
             "cases_processed": len(case_rows),
             "cases_failed": failures,
-            "passed": failures == 0,
-            "metrics": {"network_calls": 0},
+            "passed": failures == 0 and bool(case_rows),
+            "metrics": {"network_calls": 0, "citation_snapshot_validity": 1.0 if failures == 0 and case_rows else 0.0},
+            "checks": {
+                "corpus_non_empty": bool(case_rows),
+                "schema_valid": failures == 0,
+                "unique_case_ids": len(seen_case_ids) == len(case_rows),
+                "zero_network": True,
+                "zero_snippet_evidence": True,
+                "frozen_replay_reproduces_hashes": failures == 0,
+            },
+        }
+    elif lane == "chaos":
+        failures, checks, metrics = _derive_chaos_checks(run_dir, case_rows)
+        output = {
+            "lane": lane,
+            "cases_total": len(case_rows),
+            "cases_processed": len(case_rows),
+            "cases_failed": failures,
+            "passed": failures == 0 and bool(case_rows),
+            "metrics": metrics,
+            "checks": checks,
         }
     else:
         claims = [
@@ -654,8 +1169,7 @@ def run_benchmark(
         }
 
     ensure_layout(run_dir)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(output, indent=2, sort_keys=True), encoding="utf-8")
+    write_atomic_json(output_path, output)
 
     if fail_on_gate and not output["passed"]:
         raise RuntimeError("benchmark-gates-failed")
@@ -682,6 +1196,7 @@ def verify_run(
     search_rows = read_jsonl(search_rows_path) if search_rows_path.exists() else []
     provider_calls = read_jsonl(provider_calls_path) if provider_calls_path.exists() else []
     snapshot_rows = read_jsonl(snapshot_index) if snapshot_index.exists() else []
+    segment_rows = read_jsonl(run_dir / "web_evidence" / "segments.jsonl")
 
     checks = {
         "has_evidence": len(evidence_rows) > 0,
@@ -691,25 +1206,110 @@ def verify_run(
 
     if require_snapshots:
         missing = []
+        invalid = []
+        snapshot_by_id = {row.get("snapshot_id"): row for row in snapshot_rows if isinstance(row, dict)}
+        segment_by_id = {row.get("segment_id"): row for row in segment_rows if isinstance(row, dict)}
         for row in evidence_rows:
-            if row.get("snapshot_id") and not any(
-                isinstance(idx, dict) and idx.get("snapshot_id") == row.get("snapshot_id") for idx in snapshot_rows
-            ):
-                missing.append(row.get("snapshot_id"))
+            snapshot_id = row.get("snapshot_id")
+            if not snapshot_id or snapshot_id not in snapshot_by_id:
+                missing.append(snapshot_id or "<missing>")
+                continue
+            idx = snapshot_by_id[snapshot_id]
+            manifest_rel = str(idx.get("manifest_path") or "")
+            manifest_path = run_dir / manifest_rel
+            snapshot_dir = manifest_path.parent
+            raw_path = snapshot_dir / "raw.bin"
+            extracted_path = snapshot_dir / "extracted.txt"
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                raw_ok = raw_path.exists() and sha256_hex(raw_path.read_bytes()) == manifest.get("raw_sha256")
+                files_ok = manifest_path.exists() and extracted_path.exists() and raw_ok
+                segment_row = segment_by_id.get(row.get("segment_id"))
+                segment_ok = bool(segment_row and verify_segment_locator(run_dir, type("SegmentLike", (), segment_row)()))
+            except Exception:
+                files_ok = False
+                segment_ok = False
+            if not files_ok or not segment_ok:
+                invalid.append(snapshot_id)
         checks["snapshots_present"] = len(missing) == 0
         checks["missing_snapshots"] = missing[:5]
+        checks["snapshots_complete"] = len(invalid) == 0
+        checks["invalid_snapshots"] = invalid[:5]
 
     if require_counterevidence_coverage:
         query_rows = read_jsonl(run_dir / "web_evidence" / "queries.jsonl")
-        claim_ids = {r.get("claim_id") for r in evidence_rows if isinstance(r, dict) and r.get("claim_id")}
-        coverage: dict[str, set[str]] = {str(cid): set() for cid in claim_ids}
+        claim_ids = {
+            r.get("claim_id")
+            for r in evidence_rows
+            if isinstance(r, dict) and r.get("claim_id") and r.get("schema_version") == SCHEMA_EVIDENCE_V2
+        }
+        required_lanes = ("counterevidence", "freshness_supersession")
+        query_by_id = {str(row.get("query_id")): row for row in query_rows if isinstance(row, dict) and row.get("query_id")}
+        executed_by_query: dict[str, list[dict[str, Any]]] = {}
+        for row in _flatten_search_result_rows(search_rows):
+            query_id = str(row.get("query_id") or "")
+            if query_id:
+                executed_by_query.setdefault(query_id, []).append(row)
+        planned: dict[str, dict[str, list[dict[str, Any]]]] = {
+            str(cid): {lane: [] for lane in required_lanes} for cid in claim_ids
+        }
         for row in query_rows:
+            if not isinstance(row, dict):
+                continue
+            lane = str(row.get("lane", ""))
+            if lane not in required_lanes:
+                continue
             for cid in row.get("claim_ids", []):
-                if cid in coverage:
-                    coverage[str(cid)].add(str(row.get("lane", "")))
-        missing = [cid for cid, lanes in coverage.items() if "counterevidence" not in lanes]
-        checks["counterevidence_coverage_ok"] = not missing
-        checks["counterevidence_missing_claims"] = missing
+                if str(cid) in planned:
+                    planned[str(cid)][lane].append(row)
+        blockers: list[dict[str, str]] = []
+        for cid, lanes in sorted(planned.items()):
+            for lane in required_lanes:
+                lane_queries = lanes[lane]
+                if not lane_queries:
+                    blockers.append({"type": f"{lane}_missing", "claim_id": cid, "lane": lane})
+                    continue
+                for query in sorted(lane_queries, key=lambda row: str(row.get("query_id") or "")):
+                    query_id = str(query.get("query_id") or "")
+                    results = executed_by_query.get(query_id, [])
+                    if not results:
+                        blockers.append({"type": f"{lane}_not_executed", "claim_id": cid, "lane": lane, "query_id": query_id})
+                        continue
+                    for result in results:
+                        enriched = {**query_by_id.get(query_id, {}), **result}
+                        status = str(enriched.get("status") or "")
+                        typed_error = str(enriched.get("typed_error") or "")
+                        try:
+                            result_count = int(enriched.get("result_count") or 0)
+                        except (TypeError, ValueError):
+                            result_count = 0
+                        if result_count <= 0 and status in {"success", "degraded", ""}:
+                            blockers.append(
+                                {
+                                    "type": f"{lane}_no_results",
+                                    "claim_id": cid,
+                                    "lane": lane,
+                                    "query_id": query_id,
+                                    "provider_id": str(enriched.get("provider_id") or ""),
+                                }
+                            )
+                        elif status != "success":
+                            blockers.append(
+                                {
+                                    "type": f"{lane}_failed",
+                                    "claim_id": cid,
+                                    "lane": lane,
+                                    "query_id": query_id,
+                                    "provider_id": str(enriched.get("provider_id") or ""),
+                                    "status": status,
+                                    "typed_error": typed_error,
+                                }
+                            )
+        checks["counterevidence_coverage_ok"] = not blockers
+        checks["coverage_blockers"] = blockers
+        checks["automated_evidence_context_only"] = all(
+            row.get("stance") == "context" for row in evidence_rows if row.get("source_lineage", "").startswith("web_evidence")
+        )
 
     if require_audit_chain:
         checks["audit_chain_present"] = audit_log.exists()

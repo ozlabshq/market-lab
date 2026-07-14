@@ -1,0 +1,8 @@
+{"case_id":"chaos-429","failure_type":"rate_limited","expected_status":"rate_limited"}
+{"case_id":"chaos-timeout","failure_type":"timeout","expected_status":"transport_error"}
+{"case_id":"chaos-404","failure_type":"not_found","expected_status":"not_found"}
+{"case_id":"chaos-private-redirect","failure_type":"private_redirect_blocked","expected_status":"unsafe_url"}
+{"case_id":"chaos-malformed","failure_type":"malformed_body","expected_status":"extraction_failed"}
+{"case_id":"chaos-stale","failure_type":"stale_snapshot","expected_status":"blocked"}
+{"case_id":"chaos-duplicate","failure_type":"duplicate_origin","expected_status":"dedupe_skip"}
+{"case_id":"chaos-optional","failure_type":"missing_optional_credentials","expected_status":"unconfigured"}

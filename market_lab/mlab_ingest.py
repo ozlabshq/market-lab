@@ -575,6 +575,8 @@ def run_web_evidence_research(
         raise RuntimeError("finalized runs are immutable")
     if RUN_STAGE_INDEX.get(status.get("stage", "created"), 0) < RUN_STAGE_INDEX["claims_extracted"]:
         raise RuntimeError("claims must be extracted before web evidence research")
+    if RUN_STAGE_INDEX.get(status.get("stage", "created"), 0) < RUN_STAGE_INDEX["research_active"]:
+        _set_stage(run_dir, stage="research_active", owner=owner, actor=owner)
 
     from .web_evidence_runner import collect_for_claims
 
@@ -601,9 +603,21 @@ def run_web_evidence_research(
         "updated_at": _now_iso(),
     }
     _write_json(_status_path(run_dir), status)
-    if RUN_STAGE_INDEX.get(status.get("stage", "created"), 0) < RUN_STAGE_INDEX["research_active"]:
-        _set_stage(run_dir, stage="research_active", owner=owner, actor=owner)
-    _append_audit(run_dir, event="web_evidence_research", actor=owner, details=result)
+    from .web_evidence_store import append_audit_chain
+
+    append_audit_chain(
+        run_dir,
+        {
+            "event_type": "web_evidence_research",
+            "run_id": status.get("run_id") or run_dir.name,
+            "actor_id": owner,
+            "status": result.get("status", ""),
+            "claims": result.get("claims", 0),
+            "searches": result.get("searches", 0),
+            "fetches": result.get("fetches", 0),
+            "evidence_added": result.get("evidence_added", 0),
+        },
+    )
     return result
 
 

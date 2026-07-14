@@ -15,6 +15,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-root", type=Path, default=None)
     parser.add_argument("--owner", default="mlab-ingest")
     parser.add_argument("--network", action="store_true", help="allow network-backed fetch steps in SourceThesis")
+    parser.add_argument("--acquire-web-evidence", choices=["off", "frozen", "live"], default="off")
+    parser.add_argument("--web-budget-profile", default="keyless_standard")
     parser.add_argument("--days", type=int, default=260)
     return parser.parse_args()
 
@@ -52,6 +54,13 @@ def main() -> int:
         network=args.network,
         days=args.days,
     )
+    if args.acquire_web_evidence != "off":
+        mlab_ingest.run_web_evidence_research(
+            run_dir,
+            mode=args.acquire_web_evidence,
+            profile=args.web_budget_profile,
+            owner=args.owner,
+        )
     status = mlab_ingest.read_status(run_dir)
     claims = mlab_ingest.read_claims(run_dir)
 

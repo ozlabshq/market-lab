@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import fcntl
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable
@@ -102,6 +103,10 @@ def _write_atomic_text(path: Path, content: str) -> None:
     os.replace(tmp, path)
     with path.open("rb") as f:
         os.fsync(f.fileno())
+
+
+def write_atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    _write_atomic_text(Path(path), json.dumps(payload, indent=2, sort_keys=True))
 
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
@@ -217,8 +222,31 @@ def append_provider_call(run_dir: Path, payload: dict[str, Any]) -> None:
     _append_jsonl(web_evidence_dir(run_dir) / "provider_calls.jsonl", payload)
 
 
+def append_provider_call_once(run_dir: Path, payload: dict[str, Any]) -> bool:
+    path = web_evidence_dir(run_dir) / "provider_calls.jsonl"
+    provider_call_id = payload.get("provider_call_id")
+    request_id = payload.get("request_id")
+    existing = _read_jsonl(path)
+    for row in existing:
+        if provider_call_id and row.get("provider_call_id") == provider_call_id:
+            return False
+        if request_id and row.get("request_id") == request_id and row.get("provider_id") == payload.get("provider_id"):
+            return False
+    append_provider_call(run_dir, payload)
+    return True
+
+
 def append_segment(run_dir: Path, segment: EvidenceSegment) -> None:
     _append_jsonl(web_evidence_dir(run_dir) / "segments.jsonl", asdict(segment))
+
+
+def append_segment_once(run_dir: Path, segment: EvidenceSegment) -> bool:
+    path = web_evidence_dir(run_dir) / "segments.jsonl"
+    existing = {row.get("segment_id") for row in _read_jsonl(path)}
+    if segment.segment_id in existing:
+        return False
+    append_segment(run_dir, segment)
+    return True
 
 
 def append_snapshot_index(run_dir: Path, payload: dict[str, Any]) -> None:
@@ -227,6 +255,24 @@ def append_snapshot_index(run_dir: Path, payload: dict[str, Any]) -> None:
 
 def append_evidence_record(run_dir: Path, record: EvidenceRecord) -> None:
     _append_jsonl(Path(run_dir) / "evidence.jsonl", asdict(record))
+
+
+def append_evidence_record_once(run_dir: Path, record: EvidenceRecord) -> bool:
+    path = Path(run_dir) / "evidence.jsonl"
+    existing = {row.get("evidence_id") for row in _read_jsonl(path)}
+    if record.evidence_id in existing:
+        return False
+    append_evidence_record(run_dir, record)
+    return True
+
+
+def append_query_event_once(run_dir: Path, payload: dict[str, Any]) -> bool:
+    path = web_evidence_dir(run_dir) / "queries.jsonl"
+    existing = {row.get("query_id") for row in _read_jsonl(path)}
+    if payload.get("query_id") in existing:
+        return False
+    append_query_event(run_dir, payload)
+    return True
 
 
 def commit_snapshot(
@@ -417,41 +463,149 @@ def _allowlist_headers(headers: dict[str, Any] | None) -> dict[str, str]:
 def append_audit_chain(run_dir: Path, event: dict[str, Any]) -> str:
     """Append an immutable-style event with hash chaining metadata."""
 
-    base_event = dict(event)
-    base_event.setdefault("schema_version", "mlab-audit.v2")
-    base_event.setdefault("recorded_at_utc", utcnow())
-
     path = Path(run_dir) / "audit_log.jsonl"
-    previous_hash = ""
-    for row in reversed(_read_jsonl(path)):
-        if isinstance(row, dict) and row.get("event_hash"):
-            previous_hash = str(row["event_hash"])
-            break
-    base_event["previous_event_hash"] = previous_hash
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = Path(run_dir) / ".audit_log.lock"
+    with lock_path.open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            prior_bytes = path.read_bytes() if path.exists() else b""
+            previous_hash = ""
+            for raw in reversed(prior_bytes.splitlines()):
+                if not raw.strip():
+                    continue
+                try:
+                    row = json.loads(raw.decode("utf-8"))
+                except Exception:
+                    continue
+                if isinstance(row, dict) and row.get("event_hash"):
+                    previous_hash = str(row["event_hash"])
+                    break
+            if not previous_hash and prior_bytes:
+                previous_hash = sha256_hex(prior_bytes)
 
-    event_hash = canonical_hash(audit_hash_payload(base_event))
-    base_event["event_id"] = f"wa-{event_hash[:12]}"
-    base_event["event_hash"] = event_hash
+            base_event = dict(event)
+            base_event.setdefault("schema_version", "mlab-audit.v2")
+            base_event.setdefault("recorded_at_utc", utcnow())
+            base_event.setdefault("timestamp_utc", base_event["recorded_at_utc"])
+            base_event.setdefault("actor_type", "tool")
+            base_event.setdefault("actor_id", "market_lab.web_evidence")
+            base_event.setdefault("tool_version", "web_evidence.v1")
+            base_event.setdefault("model_version", None)
+            base_event.setdefault("state_transition", "")
+            base_event.setdefault("claim_ids", [base_event["claim_id"]] if base_event.get("claim_id") else [])
+            base_event.setdefault("input_artifact_hashes", [])
+            base_event.setdefault("output_artifact_hashes", [])
+            base_event.setdefault("status", "success")
+            base_event.setdefault("reason_code", "")
+            base_event.setdefault("latency_ms", 0)
+            base_event.setdefault("bytes", 0)
+            base_event.setdefault("token_usage", None)
+            base_event.setdefault("provider_cost_usd", 0)
+            base_event.setdefault("budget_before", None)
+            base_event.setdefault("budget_charge", None)
+            base_event.setdefault("budget_after", None)
+            base_event.setdefault("redactions", [])
+            base_event["previous_event_hash"] = previous_hash
 
-    _append_jsonl(path, base_event)
-    return event_hash
+            event_hash = canonical_hash(audit_hash_payload(base_event))
+            base_event["event_id"] = f"wa-{event_hash[:12]}"
+            base_event["event_hash"] = event_hash
+
+            with path.open("a", encoding="utf-8") as f:
+                if prior_bytes and not prior_bytes.endswith(b"\n"):
+                    f.write("\n")
+                f.write(json.dumps(base_event, sort_keys=True))
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            return event_hash
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def load_audit_chain(run_dir: Path) -> list[dict[str, Any]]:
-    return _read_jsonl(Path(run_dir) / "audit_log.jsonl")
+    path = Path(run_dir) / "audit_log.jsonl"
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for raw in path.read_bytes().splitlines(keepends=True):
+        if not raw.strip():
+            continue
+        raw_text = raw.decode("utf-8")
+        row = json.loads(raw_text)
+        if isinstance(row, dict):
+            row["__raw_line"] = raw_text
+            rows.append(row)
+    return rows
+
+
+_AUDIT_V2_REQUIRED_TYPES: dict[str, tuple[type, ...]] = {
+    "schema_version": (str,),
+    "recorded_at_utc": (str,),
+    "timestamp_utc": (str,),
+    "event_type": (str,),
+    "actor_type": (str,),
+    "actor_id": (str,),
+    "tool_version": (str,),
+    "state_transition": (str,),
+    "claim_ids": (list,),
+    "input_artifact_hashes": (list,),
+    "output_artifact_hashes": (list,),
+    "status": (str,),
+    "reason_code": (str,),
+    "latency_ms": (int,),
+    "bytes": (int,),
+    "provider_cost_usd": (int, float),
+    "redactions": (list,),
+    "previous_event_hash": (str,),
+    "event_id": (str,),
+    "event_hash": (str,),
+}
+
+
+def _validate_audit_v2_envelope(row: dict[str, Any]) -> str:
+    for field, types in _AUDIT_V2_REQUIRED_TYPES.items():
+        if field not in row:
+            return field
+        if not isinstance(row[field], types):
+            return field
+    if row.get("schema_version") != "mlab-audit.v2":
+        return "schema_version"
+    return ""
 
 
 def verify_audit_chain(rows: Iterable[dict[str, Any]]) -> tuple[bool, str]:
+    legacy_bytes = b""
     previous = ""
+    seen_v2 = False
     for row in rows:
         if not isinstance(row, dict):
             continue
         row = dict(row)
+        raw_line = row.pop("__raw_line", None)
         payload = audit_hash_payload(row)
         event_hash = row.get("event_hash")
         if not event_hash:
-            return False, "missing event_hash"
-        if previous and payload.get("previous_event_hash") != previous:
+            if seen_v2:
+                return False, "missing event_hash"
+            if raw_line is not None:
+                legacy_bytes += str(raw_line).encode("utf-8")
+            else:
+                legacy_bytes += (json.dumps(row, sort_keys=True) + "\n").encode("utf-8")
+            continue
+        seen_v2 = True
+        invalid_field = _validate_audit_v2_envelope(row)
+        if invalid_field:
+            return False, f"invalid v2 envelope: {invalid_field}"
+        expected_previous = previous
+        if not expected_previous and legacy_bytes:
+            expected_previous = sha256_hex(legacy_bytes)
+        actual_previous = payload.get("previous_event_hash", "")
+        if actual_previous != expected_previous and legacy_bytes.endswith(b"\n"):
+            if actual_previous == sha256_hex(legacy_bytes[:-1]):
+                expected_previous = actual_previous
+        if actual_previous != expected_previous:
             return False, "previous_event_hash mismatch"
         if canonical_hash(payload) != event_hash:
             return False, "event hash mismatch"
@@ -468,9 +622,13 @@ __all__ = [
     "append_query_event",
     "append_search_results",
     "append_provider_call",
+    "append_provider_call_once",
     "append_segment",
+    "append_segment_once",
     "append_snapshot_index",
     "append_evidence_record",
+    "append_evidence_record_once",
+    "append_query_event_once",
     "commit_snapshot",
     "read_extracted_text",
     "read_snapshot_manifest",
@@ -480,6 +638,7 @@ __all__ = [
     "append_audit_chain",
     "load_audit_chain",
     "verify_audit_chain",
+    "write_atomic_json",
 ]
 
 # Type alias kept small for mypy compatibility with test fixtures.

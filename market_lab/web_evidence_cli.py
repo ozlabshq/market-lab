@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .web_evidence import BudgetProfile, load_budget_profile
 from .web_evidence_runner import check_health, collect_for_claims, run_benchmark, run_smoke, verify_run
+from .web_evidence_store import write_atomic_json
 
 
 def _path_arg(value: str) -> Path:
@@ -73,7 +74,7 @@ def cmd_verify_run(args: argparse.Namespace) -> dict:
 
 def cmd_benchmark(args: argparse.Namespace) -> dict:
     return run_benchmark(
-        Path(args.run_dir),
+        Path(args.run_dir or Path(args.output).with_suffix("").as_posix() + "_run"),
         lane=args.lane,
         cases_path=Path(args.cases),
         output_path=Path(args.output),
@@ -87,12 +88,14 @@ def parser() -> argparse.ArgumentParser:
 
     hp = sub.add_parser("health", help="check provider health")
     hp.add_argument("--profile", default="keyless_standard")
+    hp.add_argument("--output")
     hp.add_argument("--require-core-ready", action="store_true", dest="require_core_ready")
-    hp.add_argument("--include-optional", action="store_true", default=False, dest="include_optional")
+    hp.add_argument("--include-optional", action="store_true", default=True, dest="include_optional")
 
     sp = sub.add_parser("smoke", help="run smoke probes")
     sp.add_argument("--profile", default="keyless_standard")
     sp.add_argument("--run-dir", required=True)
+    sp.add_argument("--output")
     sp.add_argument("--query")
     sp.add_argument("--url")
     sp.add_argument("--sec-cik")
@@ -117,7 +120,7 @@ def parser() -> argparse.ArgumentParser:
     vr.add_argument("--require-zero-execution-side-effects", action="store_true", default=False)
 
     bp = sub.add_parser("benchmark", help="run benchmark cases")
-    bp.add_argument("--run-dir", required=True)
+    bp.add_argument("--run-dir", required=False)
     bp.add_argument("--lane", required=True)
     bp.add_argument("--cases", required=True)
     bp.add_argument("--output", required=True)
@@ -141,6 +144,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         raise SystemExit("unknown command")
 
+    output = getattr(args, "output", None)
+    if output and args.command in {"health", "smoke"}:
+        write_atomic_json(Path(output), payload)
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
