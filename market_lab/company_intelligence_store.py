@@ -173,17 +173,24 @@ class CompanyIntelligenceRunStore:
     def replay(self) -> ReplayResult:
         reasons: list[str] = []
         digests: list[str] = []
-        for relative in (
+        required_artifacts = (
             "manifest.json",
             "policy_snapshot.json",
             "input_refs.json",
             "issuer_discovery.json",
             "company_packets/drafts/all_drafts.json",
             "gate_report.json",
-        ):
+            "status.json",
+        )
+        optional_artifacts = (
+            "independent_review.json",
+            "publication.json",
+        )
+        for relative in (*required_artifacts, *optional_artifacts):
             path = self.run_dir / relative
             if not path.exists():
-                reasons.append(f"missing:{relative}")
+                if relative in required_artifacts:
+                    reasons.append(f"missing:{relative}")
                 continue
             try:
                 digests.append(_artifact_digest(self.read_json(relative)))

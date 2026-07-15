@@ -13,6 +13,7 @@ from market_lab.company_intelligence_runner import (
     build_frozen_company_run,
     publish_run,
     replay_run,
+    run_company_intelligence_benchmark,
     run_frozen_benchmark,
     validate_run,
     validate_web_evidence_input,
@@ -39,6 +40,7 @@ def test_frozen_build_discovers_real_issuers_and_uses_zero_network(tmp_path: Pat
 
 def test_publication_requires_independent_approve_and_preserves_deterministic_outcomes(tmp_path: Path) -> None:
     build_frozen_company_run(cases_path=FIXTURE, output_root=tmp_path, run_id="run-review", builder_id="builder-a")
+    before = replay_run(tmp_path / "run-review")
 
     self_review = publish_run(tmp_path / "run-review", reviewer_id="builder-a", decision="APPROVE")
     assert self_review["review_ok"] is False
@@ -50,6 +52,11 @@ def test_publication_requires_independent_approve_and_preserves_deterministic_ou
     rejected = [row for row in approved["outcomes"] if row["outcome"] == "REJECT_MAPPING"]
     assert ready and parked and rejected
     assert all(row["validation_outcome"] != "DRAFT_READY_PENDING_REVIEW" for row in parked + rejected)
+    conflict = replay_run(tmp_path / "run-review")
+    assert len(conflict["artifact_digests"]) == len(before["artifact_digests"]) + 2
+    with pytest.raises(CompanyStoreError, match="immutable artifact already exists with different digest"):
+        publish_run(tmp_path / "run-review", reviewer_id="reviewer-c", decision="REJECT")
+    assert replay_run(tmp_path / "run-review") == conflict
 
 
 def test_store_rejects_truncated_jsonl_and_frozen_replay_does_not_mutate(tmp_path: Path) -> None:
@@ -113,3 +120,30 @@ def test_cli_build_validate_replay_benchmark_smoke(tmp_path: Path) -> None:
         capture_output=True,
     )
     assert json.loads(benchmark.stdout)["metrics"]["selected_security_precision"] == "1"
+
+    chaos = subprocess.run(
+        [sys.executable, str(script), "benchmark", "--lane", "chaos", "--cases", str(FIXTURE)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    chaos_payload = json.loads(chaos.stdout)
+    assert chaos_payload["lane"] == "chaos"
+    assert chaos_payload["checks"]["typed_failures"] == []
+
+
+def test_chaos_benchmark_lane_is_distinct_and_fails_fast_on_mutable_inputs(tmp_path: Path) -> None:
+    frozen = run_frozen_benchmark(FIXTURE)
+    chaos = run_company_intelligence_benchmark(FIXTURE, lane="chaos")
+    assert frozen["ok"] is True
+    assert chaos["lane"] == "chaos"
+    assert chaos["checks"]["typed_failures"] == []
+    assert chaos["metrics"] == frozen["metrics"]
+
+    corrupted = tmp_path / "mutated.jsonl"
+    rows = [json.loads(line) for line in FIXTURE.read_text().splitlines() if line]
+    rows[0]["case_id"] = rows[0]["case_id"] + "-mutated"
+    corrupted.write_text("\n".join(canonical_json(row) for row in rows))
+    failed = run_company_intelligence_benchmark(corrupted, lane="chaos", fail_on_gate=True)
+    assert failed["ok"] is False
+    assert any("case_schema_failed" in reason for reason in failed["checks"]["typed_failures"])

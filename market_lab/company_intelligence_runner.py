@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from .agency_contracts import canonical_bytes, canonical_json, sha256_hex
+from .agency_contracts import canonical_bytes, canonical_json, sha256_hex, strict_json_loads
 from .company_exposure import ExposureEvidence, ExposureStatus, assess_exposure_from_evidence
 from .company_intelligence import (
     CompanyDraftPacket,
@@ -20,7 +20,12 @@ from .company_intelligence import (
     SCHEMA_COMPANY_REVIEW_V1,
     derive_validation_outcome,
 )
-from .company_intelligence_benchmark import CompanyIntelBenchmarkCase, BenchmarkCategory, load_oz_company_intel_bench
+from .company_intelligence_benchmark import (
+    CompanyIntelBenchmarkCase,
+    BenchmarkCategory,
+    _validate_corpus,
+    load_oz_company_intel_bench,
+)
 from .company_intelligence_store import CompanyIntelligenceRunStore, CompanyStoreError, SCHEMA_COMPANY_RUN_MANIFEST_V1
 
 SCHEMA_WEB_COMPATIBILITY_V1 = "mlab-company-web-evidence-compatibility.v1"
@@ -293,7 +298,9 @@ def publish_run(run_dir: Path, *, reviewer_id: str, decision: str = "APPROVE") -
             "reviewed_policy_digest": policy_digest,
             "reviewed_gate_digest": gate_digest,
         }
-        store.write_json("independent_review.json", review, immutable=False)
+        should_persist_review = reviewer_id != builder_id
+        if should_persist_review:
+            store.write_json("independent_review.json", review, immutable=True)
         review_ok = decision == "APPROVE" and reviewer_id != builder_id
         current_replay = store.replay()
         replay_ok = current_replay.ok and current_replay.semantic_digest != ""
@@ -321,22 +328,26 @@ def publish_run(run_dir: Path, *, reviewer_id: str, decision: str = "APPROVE") -
             "replay_ok": replay_ok,
             "outcomes": outcomes,
         }
-        store.write_json("publication.json", publication, immutable=False)
+        if should_persist_review:
+            store.write_json("publication.json", publication, immutable=True)
         store.audit("publication.written", {"review_ok": review_ok, "replay_ok": replay_ok, "outcomes": len(outcomes)})
         return publication
 
 
 def run_frozen_benchmark(cases_path: Path, *, fail_on_gate: bool = False) -> dict[str, Any]:
-    cases = load_oz_company_intel_bench(cases_path)
-    drafts = tuple(_draft_for_case(case, "benchmark-builder") for case in cases)
+    return run_company_intelligence_benchmark(cases_path, lane="frozen", fail_on_gate=fail_on_gate)
+
+
+def _benchmark_rollup(cases: tuple[CompanyIntelBenchmarkCase, ...], *, builder_id: str = "benchmark-builder") -> dict[str, Any]:
+    drafts = tuple(_draft_for_case(case, builder_id) for case in cases)
     selected_total = sum(len(case.expected_selected_evidence_ids) for case in cases)
     selected_correct = 0
     numeric_total = 0
     numeric_correct = 0
-    hard_blocks = 0
+    hard_gate_blocks = 0
     for case, draft in zip(cases, drafts):
         if _outcome_for_case(case) is not DraftValidationOutcome.DRAFT_READY_PENDING_REVIEW:
-            hard_blocks += 1
+            hard_gate_blocks += 1
         expected = {item.digest_sha256 for item in case.expected_selected_evidence_ids}
         actual = set(draft.evidence_ids[: len(expected)])
         selected_correct += len(expected & actual)
@@ -345,13 +356,93 @@ def run_frozen_benchmark(cases_path: Path, *, fail_on_gate: bool = False) -> dic
             numeric_total += 1
             if draft.exposure.get("status") == ExposureStatus.VALID.value:
                 numeric_correct += 1
-    metrics = {
+    selected_precision = "1" if selected_total == selected_correct else str(selected_correct / selected_total)
+    numeric_accuracy = "1" if numeric_total == numeric_correct else str(numeric_correct / numeric_total)
+    return {
+        "selected_security_precision": selected_precision,
+        "numeric_exposure_accuracy": numeric_accuracy,
+        "hard_gate_blocks": hard_gate_blocks,
         "cases": len(cases),
-        "selected_security_precision": "1" if selected_total == selected_correct else str(selected_correct / selected_total),
-        "numeric_exposure_accuracy": "1" if numeric_total == numeric_correct else str(numeric_correct / numeric_total),
-        "hard_gate_blocks": hard_blocks,
     }
-    ok = metrics["selected_security_precision"] == "1" and metrics["numeric_exposure_accuracy"] == "1"
-    if fail_on_gate and hard_blocks:
+
+
+def _load_chaos_cases(cases_path: Path) -> tuple[tuple[CompanyIntelBenchmarkCase, ...], tuple[str, ...]]:
+    try:
+        text = cases_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        return (), (f"corpus_read_failed:{exc}",)
+
+    rows: list[CompanyIntelBenchmarkCase] = []
+    typed_failures: list[str] = []
+    seen_case_ids: set[str] = set()
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if not line:
+            continue
+        try:
+            payload = strict_json_loads(line)
+        except Exception as exc:
+            typed_failures.append(f"line[{line_number}].json_parse_failed:{exc}")
+            continue
+        if not isinstance(payload, dict):
+            typed_failures.append(f"line[{line_number}].payload_not_object")
+            continue
+        if canonical_json(payload) != line:
+            typed_failures.append(f"line[{line_number}].line_not_canonical")
+        try:
+            case = CompanyIntelBenchmarkCase.from_dict(payload)
+        except Exception as exc:
+            typed_failures.append(f"line[{line_number}].case_schema_failed:{type(exc).__name__}")
+            continue
+        if case.case_id in seen_case_ids:
+            typed_failures.append(f"line[{line_number}].duplicate_case_id:{case.case_id}")
+            continue
+        seen_case_ids.add(case.case_id)
+        rows.append(case)
+
+    if rows:
+        try:
+            _validate_corpus(tuple(rows))
+        except Exception as exc:
+            typed_failures.append(f"corpus_validation_failed:{exc}")
+    elif text.strip():
+        typed_failures.append("no_valid_rows")
+    else:
+        typed_failures.append("empty_corpus")
+    return tuple(rows), tuple(typed_failures)
+
+
+def run_company_intelligence_benchmark(
+    cases_path: Path,
+    *,
+    lane: str = "frozen",
+    fail_on_gate: bool = False,
+) -> dict[str, Any]:
+    lane = lane.strip().lower()
+    if lane == "frozen":
+        metrics = _benchmark_rollup(load_oz_company_intel_bench(cases_path))
+        ok = metrics["selected_security_precision"] == "1" and metrics["numeric_exposure_accuracy"] == "1"
+        if fail_on_gate and metrics["hard_gate_blocks"]:
+            ok = False
+        return {"lane": lane, "ok": ok, "metrics": metrics}
+
+    if lane != "chaos":
+        raise ValueError(f"unknown benchmark lane: {lane}")
+
+    cases, typed_failures = _load_chaos_cases(cases_path)
+    metrics = _benchmark_rollup(cases, builder_id="chaos-benchmark-builder") if cases else {
+        "cases": 0,
+        "selected_security_precision": "0",
+        "numeric_exposure_accuracy": "0",
+        "hard_gate_blocks": 0,
+    }
+    base_ok = metrics["selected_security_precision"] == "1" and metrics["numeric_exposure_accuracy"] == "1"
+    checks = {
+        "typed_failures": list(typed_failures),
+        "case_count": len(cases),
+        "hard_gate_blocks": metrics["hard_gate_blocks"],
+        "line_validation_enabled": True,
+    }
+    ok = base_ok and not typed_failures
+    if fail_on_gate and (metrics["hard_gate_blocks"] or typed_failures):
         ok = False
-    return {"ok": ok, "metrics": metrics}
+    return {"lane": lane, "ok": ok, "metrics": metrics, "checks": checks}

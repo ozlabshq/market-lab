@@ -11,9 +11,9 @@ from .agency_contracts import canonical_json
 from .config import COMPANY_INTELLIGENCE_DIR
 from .company_intelligence_runner import (
     build_frozen_company_run,
+    run_company_intelligence_benchmark,
     publish_run,
     replay_run,
-    run_frozen_benchmark,
     validate_run,
     validate_web_evidence_input,
     DEFAULT_POLICY,
@@ -76,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         _print(publish_run(Path(args.run_dir), reviewer_id=args.reviewer_id, decision=args.decision))
         return 0
     if args.command == "benchmark":
-        result = run_frozen_benchmark(Path(args.cases), fail_on_gate=args.fail_on_gate)
+        result = run_company_intelligence_benchmark(Path(args.cases), lane=args.lane, fail_on_gate=args.fail_on_gate)
         _print(result)
         return 1 if not result["ok"] else 0
     if args.command == "live-shadow":
