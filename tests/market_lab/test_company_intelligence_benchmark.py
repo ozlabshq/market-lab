@@ -43,7 +43,7 @@ def test_frozen_corpus_has_realistic_complete_deterministic_zero_network_coverag
     monkeypatch.setattr(socket, "socket", network_forbidden)
     cases = load_oz_company_intel_bench(FIXTURE)
 
-    assert len(cases) == 10
+    assert len(cases) == 36
     assert {case.category for case in cases} == set(BenchmarkCategory)
     assert sha256_hex(FIXTURE.read_bytes()) == OZ_COMPANY_INTEL_BENCH_V1_BYTE_SHA256
     assert len({case.case_id for case in cases}) == len(cases)
@@ -54,18 +54,19 @@ def test_frozen_corpus_has_realistic_complete_deterministic_zero_network_coverag
     assert all(source.publisher and source.source_reference for case in cases for source in case.sources)
     assert all(len(source.frozen_content) >= 80 for case in cases for source in case.sources)
     assert all(source.evidence_id.local_id == f"frozen-content-sha256:{source.frozen_content_sha256}" for case in cases for source in case.sources)
-    assert [case.case_id for case in cases] == [
+    assert [case.case_id for case in cases[:10]] == [
         "nvidia-fy2025-compute-networking-exposure",
-        "microsoft-fy2024-cloud-transcript-citation",
-        "apple-fy2023-competition-moat-context",
-        "nvidia-fy2025-blackwell-ramp-catalyst",
-        "tesla-fy2024-part-iii-amendment",
-        "cross-issuer-document-mismatch",
-        "qualitative-theme-exposure-remains-unknown",
-        "apple-substitution-counterevidence-disputes-moat",
-        "nvidia-results-syndication-single-confirmation",
-        "post-cutoff-results-cannot-promote",
+        "microsoft-fy2024-intelligent-cloud-exposure",
+        "apple-fy2023-services-revenue-exposure",
+        "tesla-fy2024-energy-generation-storage-exposure",
+        "amd-fy2024-data-center-segment-exposure",
+        "broadcom-fy2024-semiconductor-solutions-exposure",
+        "amazon-fy2024-aws-segment-exposure",
+        "meta-fy2024-reality-labs-exposure",
+        "alphabet-fy2024-google-cloud-exposure",
+        "oracle-fy2024-cloud-services-license-support-exposure",
     ]
+    assert {"post-cutoff-results-cannot-promote", "post-cutoff-amazon-aws-results-block"}.issubset({case.case_id for case in cases})
 
 
 def test_case_and_source_round_trip_are_frozen_and_digest_bound() -> None:
@@ -146,7 +147,7 @@ def test_corpus_rules_reject_missing_coverage_and_syndication_promotion(tmp_path
     rows = fixture_rows()
     missing = tmp_path / "missing-category.jsonl"
     write_rows(missing, rows[:-1])
-    with pytest.raises(ValueError, match="category coverage is incomplete"):
+    with pytest.raises(ValueError, match="requires at least 36 cases|category coverage is incomplete"):
         load_oz_company_intel_bench(missing, enforce_frozen_digest=False)
 
     rows = fixture_rows()

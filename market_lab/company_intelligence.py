@@ -18,6 +18,10 @@ SCHEMA_COMPETITIVE_MOAT_V1 = "mlab-competitive-moat.v1"
 SCHEMA_COMPETITIVE_RELATIONSHIP_V1 = "mlab-competitive-relationship.v1"
 SCHEMA_CATALYST_ASSESSMENT_V1 = "mlab-catalyst-assessment.v1"
 SAFETY_MODE_RESEARCH_MOCK_ONLY = "research_mock_only"
+SCHEMA_COMPANY_PACKET_V1 = "mlab-company-packet.v1"
+SCHEMA_COMPANY_GATE_REPORT_V1 = "mlab-company-gate-report.v1"
+SCHEMA_COMPANY_REVIEW_V1 = "mlab-company-review.v1"
+SCHEMA_COMPANY_PUBLICATION_V1 = "mlab-company-publication.v1"
 
 
 class ThemeStatus(Enum):
@@ -100,6 +104,28 @@ class ValueChainStatus(Enum):
     EVIDENCED = "EVIDENCED"
     DISPUTED = "DISPUTED"
     BLOCKED = "BLOCKED"
+
+
+class DraftValidationOutcome(Enum):
+    DRAFT_READY_PENDING_REVIEW = "DRAFT_READY_PENDING_REVIEW"
+    PARK_RESEARCH = "PARK_RESEARCH"
+    REJECT_MAPPING = "REJECT_MAPPING"
+
+
+class FinalPublicationOutcome(Enum):
+    READY = "READY"
+    PARK_RESEARCH = "PARK_RESEARCH"
+    REJECT_MAPPING = "REJECT_MAPPING"
+    BLOCKED_REVIEW = "BLOCKED_REVIEW"
+
+
+class GateStatus(Enum):
+    PASS = "PASS"
+    BLOCKED = "BLOCKED"
+    REJECT = "REJECT"
+
+
+MANDATORY_COMPANY_GATES = tuple(f"G{index}" for index in range(10))
 
 
 class ValueChainRelation(Enum):
@@ -430,6 +456,151 @@ class MechanismClaim:
 class ValidationResult:
     ok: bool
     reason_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CompanyGateResult:
+    gate_id: str
+    status: GateStatus
+    reason_codes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.gate_id not in MANDATORY_COMPANY_GATES:
+            raise ValueError("unknown company gate")
+        if not isinstance(self.status, GateStatus):
+            object.__setattr__(self, "status", _enum(GateStatus, self.status, "status"))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"gate_id": self.gate_id, "status": self.status.value, "reason_codes": list(self.reason_codes)}
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "CompanyGateResult":
+        return cls(
+            gate_id=str(payload.get("gate_id", "")),
+            status=_enum(GateStatus, payload.get("status"), "status"),  # type: ignore[arg-type]
+            reason_codes=_strings(payload.get("reason_codes", ()), "reason_codes"),
+        )
+
+
+@dataclass(frozen=True)
+class CompanyGateReport:
+    gate_results: tuple[CompanyGateResult, ...]
+    validation_outcome: DraftValidationOutcome
+    policy_digest: str
+    run_digest: str
+    draft_packet_digest: str
+    schema_version: str = SCHEMA_COMPANY_GATE_REPORT_V1
+
+    def __post_init__(self) -> None:
+        if self.schema_version != SCHEMA_COMPANY_GATE_REPORT_V1:
+            raise ValueError(f"schema_version must be {SCHEMA_COMPANY_GATE_REPORT_V1}")
+        if not isinstance(self.validation_outcome, DraftValidationOutcome):
+            object.__setattr__(self, "validation_outcome", _enum(DraftValidationOutcome, self.validation_outcome, "validation_outcome"))
+        gate_ids = tuple(result.gate_id for result in self.gate_results)
+        if gate_ids != MANDATORY_COMPANY_GATES:
+            raise ValueError("gate report must contain G0-G9 exactly once in order")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "gate_results": [result.to_dict() for result in self.gate_results],
+            "validation_outcome": self.validation_outcome.value,
+            "policy_digest": self.policy_digest,
+            "run_digest": self.run_digest,
+            "draft_packet_digest": self.draft_packet_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "CompanyGateReport":
+        return cls(
+            schema_version=str(payload.get("schema_version", "")),
+            gate_results=tuple(CompanyGateResult.from_dict(item) for item in payload.get("gate_results", ())),
+            validation_outcome=_enum(DraftValidationOutcome, payload.get("validation_outcome"), "validation_outcome"),  # type: ignore[arg-type]
+            policy_digest=str(payload.get("policy_digest", "")),
+            run_digest=str(payload.get("run_digest", "")),
+            draft_packet_digest=str(payload.get("draft_packet_digest", "")),
+        )
+
+
+@dataclass(frozen=True)
+class CompanyDraftPacket:
+    candidate_id: str
+    builder_id: str
+    theme: str
+    issuer: str
+    security: str | None
+    discovery_rationale: str
+    evidence_ids: tuple[str, ...]
+    exposure: Mapping[str, Any]
+    benchmark_case_id: str
+    validation_outcome: DraftValidationOutcome
+    reason_codes: tuple[str, ...]
+    schema_version: str = SCHEMA_COMPANY_PACKET_V1
+    draft_packet_digest: str = ""
+
+    def __post_init__(self) -> None:
+        if self.schema_version != SCHEMA_COMPANY_PACKET_V1:
+            raise ValueError(f"schema_version must be {SCHEMA_COMPANY_PACKET_V1}")
+        if not self.candidate_id or not self.builder_id or not self.theme or not self.issuer or not self.discovery_rationale:
+            raise ValueError("draft packet missing required identity fields")
+        if not isinstance(self.validation_outcome, DraftValidationOutcome):
+            object.__setattr__(self, "validation_outcome", _enum(DraftValidationOutcome, self.validation_outcome, "validation_outcome"))
+        expected = sha256_hex(canonical_bytes(self.to_dict(include_digest=False)))
+        if self.draft_packet_digest and self.draft_packet_digest != expected:
+            raise ValueError("draft packet digest mismatch")
+        object.__setattr__(self, "draft_packet_digest", expected)
+
+    def to_dict(self, *, include_digest: bool = True) -> dict[str, Any]:
+        payload = {
+            "schema_version": self.schema_version,
+            "candidate_id": self.candidate_id,
+            "builder_id": self.builder_id,
+            "theme": self.theme,
+            "issuer": self.issuer,
+            "security": self.security,
+            "discovery_rationale": self.discovery_rationale,
+            "evidence_ids": list(self.evidence_ids),
+            "exposure": dict(self.exposure),
+            "benchmark_case_id": self.benchmark_case_id,
+            "validation_outcome": self.validation_outcome.value,
+            "reason_codes": list(self.reason_codes),
+        }
+        if include_digest:
+            payload["draft_packet_digest"] = self.draft_packet_digest
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "CompanyDraftPacket":
+        return cls(
+            schema_version=str(payload.get("schema_version", "")),
+            candidate_id=str(payload.get("candidate_id", "")),
+            builder_id=str(payload.get("builder_id", "")),
+            theme=str(payload.get("theme", "")),
+            issuer=str(payload.get("issuer", "")),
+            security=payload.get("security"),
+            discovery_rationale=str(payload.get("discovery_rationale", "")),
+            evidence_ids=_strings(payload.get("evidence_ids", ()), "evidence_ids"),
+            exposure=payload.get("exposure", {}),
+            benchmark_case_id=str(payload.get("benchmark_case_id", "")),
+            validation_outcome=_enum(DraftValidationOutcome, payload.get("validation_outcome"), "validation_outcome"),  # type: ignore[arg-type]
+            reason_codes=_strings(payload.get("reason_codes", ()), "reason_codes"),
+            draft_packet_digest=str(payload.get("draft_packet_digest", "")),
+        )
+
+
+def derive_validation_outcome(gates: tuple[CompanyGateResult, ...]) -> DraftValidationOutcome:
+    gate_by_id = {gate.gate_id: gate for gate in gates}
+    if gate_by_id.get("G3") and gate_by_id["G3"].status is GateStatus.REJECT:
+        return DraftValidationOutcome.REJECT_MAPPING
+    if gate_by_id.get("G4") and gate_by_id["G4"].status is GateStatus.REJECT:
+        return DraftValidationOutcome.REJECT_MAPPING
+    if any(gate.status is not GateStatus.PASS for gate in gates):
+        return DraftValidationOutcome.PARK_RESEARCH
+    return DraftValidationOutcome.DRAFT_READY_PENDING_REVIEW
+
+
+def gate_report_digest(report: CompanyGateReport) -> str:
+    return sha256_hex(canonical_bytes(report.to_dict()))
 
 
 @dataclass(frozen=True)

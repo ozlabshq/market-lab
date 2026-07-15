@@ -37,8 +37,28 @@ def test_product_code_does_not_touch_protected_state_or_import_execution_modules
     after = snapshot_protected_state(tmp_path)
     assert after == before
 
-    forbidden = {"broker", "options_data", "options_paper", "options_screeners", "portfolio_construction", "alpaca"}
-    for path in (ROOT / "market_lab" / "company_intelligence.py", ROOT / "market_lab" / "company_identity.py"):
+    forbidden = {
+        "broker",
+        "options_data",
+        "options_paper",
+        "options_screeners",
+        "portfolio_construction",
+        "alpaca",
+        "requests",
+        "httpx",
+        "urllib",
+        "urllib.request",
+    }
+    for path in (
+        ROOT / "market_lab" / "company_intelligence.py",
+        ROOT / "market_lab" / "company_identity.py",
+        ROOT / "market_lab" / "company_exposure.py",
+        ROOT / "market_lab" / "company_documents.py",
+        ROOT / "market_lab" / "company_intelligence_benchmark.py",
+        ROOT / "market_lab" / "company_intelligence_store.py",
+        ROOT / "market_lab" / "company_intelligence_runner.py",
+        ROOT / "market_lab" / "company_intelligence_cli.py",
+    ):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):

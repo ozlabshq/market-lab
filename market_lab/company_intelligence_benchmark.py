@@ -9,13 +9,12 @@ from enum import Enum
 from pathlib import Path
 import re
 from typing import Any, Mapping
-from urllib.parse import urlparse
 
 from .agency_contracts import TypedID, canonical_bytes, canonical_json, sha256_hex, strict_json_loads, validate_sha256, validate_timestamp
 
 SCHEMA_OZ_COMPANY_INTEL_BENCH_V1 = "oz-company-intel-bench.v1"
 SCHEMA_OZ_COMPANY_INTEL_SOURCE_V1 = "oz-company-intel-source.v1"
-OZ_COMPANY_INTEL_BENCH_V1_BYTE_SHA256 = "5dc70527198a81433dbb485b0eedd365fbe6910e39f2091580f4139dddc50313"
+OZ_COMPANY_INTEL_BENCH_V1_BYTE_SHA256 = "18455c263db825c7daef6e5dc053be0e7b75ce7d7035e7c260fc906cdac52302"
 SAFETY_MODE_RESEARCH_MOCK_ONLY = "research_mock_only"
 
 
@@ -117,6 +116,16 @@ def _require_concrete_reference(value: str, field_name: str) -> None:
         raise ValueError(f"{field_name} contains placeholder provenance")
 
 
+def _https_hostname(value: str) -> str:
+    if not value.startswith("https://"):
+        raise ValueError("source_locator must be an absolute HTTPS URL")
+    rest = value[len("https://") :]
+    host = rest.split("/", 1)[0].split(":", 1)[0].lower()
+    if not host or "." not in host or any(char.isspace() for char in host):
+        raise ValueError("source_locator must be an absolute HTTPS URL")
+    return host
+
+
 def _require_exposure_value(value: Any, field_name: str) -> Decimal:
     if isinstance(value, bool) or value is None or (isinstance(value, str) and not value.strip()):
         raise ValueError("exposure requires complete numerator and denominator semantics")
@@ -162,10 +171,8 @@ class FrozenSourceRecord:
             raise ValueError("formulaic source_reference is forbidden")
         _require_concrete_reference(self.source_reference, "source_reference")
         _require_concrete_reference(self.source_locator, "source_locator")
-        parsed = urlparse(self.source_locator)
-        if parsed.scheme != "https" or not parsed.netloc:
-            raise ValueError("source_locator must be an absolute HTTPS URL")
-        if self.source_kind in (FrozenSourceKind.SEC_FILING, FrozenSourceKind.SEC_COMPANYFACTS) and not parsed.hostname.endswith("sec.gov"):  # type: ignore[union-attr]
+        hostname = _https_hostname(self.source_locator)
+        if self.source_kind in (FrozenSourceKind.SEC_FILING, FrozenSourceKind.SEC_COMPANYFACTS) and not hostname.endswith("sec.gov"):
             raise ValueError("SEC sources must use an sec.gov locator")
         published = _dt(self.source_published_at_utc, "source_published_at_utc")
         available = _dt(self.source_available_at_utc, "source_available_at_utc")
@@ -322,6 +329,8 @@ class CompanyIntelBenchmarkCase:
 def _validate_corpus(cases: tuple[CompanyIntelBenchmarkCase, ...]) -> None:
     if not cases:
         raise ValueError("OzCompanyIntelBench-v1 corpus is empty")
+    if len(cases) < 36:
+        raise ValueError("OzCompanyIntelBench-v1 requires at least 36 cases")
     if len({case.case_id for case in cases}) != len(cases):
         raise ValueError("duplicate benchmark case_id")
     categories = {case.category for case in cases}

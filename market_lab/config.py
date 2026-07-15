@@ -20,6 +20,7 @@ LEDGER_PATH = DATA_DIR / "mock_ledger.jsonl"
 
 SOURCE_THESIS_DIR = DATA_DIR / "source_thesis"
 SOURCE_THESIS_REPORT_DIR = SOURCE_THESIS_DIR / "reports"
+COMPANY_INTELLIGENCE_DIR = DATA_DIR / "company_intelligence"
 
 VT_TREND_DIR = DATA_DIR / "vt_trend"
 VT_TREND_STATE = VT_TREND_DIR / "portfolio_state.json"
@@ -99,5 +100,6 @@ def ensure_dirs() -> None:
         TSMOM_REPORT_DIR,
         SOURCE_THESIS_DIR,
         SOURCE_THESIS_REPORT_DIR,
+        COMPANY_INTELLIGENCE_DIR,
     ):
         path.mkdir(parents=True, exist_ok=True)
