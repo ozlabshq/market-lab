@@ -629,6 +629,8 @@ def validate_competitive_moat(
     for relationship in assessment.competitor_relationships:
         if _utc_datetime(relationship.valid_from, "valid_from") > cutoff:
             reasons.append("relationship_after_analysis_cutoff")
+        if not relationship.evidence_ids:
+            reasons.append("missing_relationship_evidence")
         for evidence_id in relationship.evidence_ids:
             evidence = evidence_index.get(evidence_id)
             if evidence is None:

@@ -132,6 +132,25 @@ def test_competitor_relationship_effective_after_analysis_cutoff_is_rejected() -
     assert "relationship_after_analysis_cutoff" in result.reason_codes
 
 
+def test_competitor_relationship_without_evidence_fails_closed() -> None:
+    support = evidence("filing", claim_id=tid("claim", "moat"))
+    relationship = CompetitiveRelationship(
+        relationship_id=tid("competitive_relationship", "unsupported-competitor"),
+        competitor_issuer_id=tid("issuer", "rivalco"),
+        relation=ValueChainRelation.COMPETES_WITH,
+        valid_from="2026-07-01T00:00:00Z",
+        valid_to=None,
+        evidence_ids=(),
+    )
+    assessment = moat_assessment(moat_evidence_ids=(support.evidence_id,), relationships=(relationship,))
+
+    result = validate_competitive_moat(assessment, {support.evidence_id: support})
+
+    assert result.ok is False
+    assert result.outcome is ValidationOutcome.NON_PROMOTABLE
+    assert result.reason_codes == ("missing_relationship_evidence",)
+
+
 def test_confirmed_catalyst_with_only_unverified_claim_id_has_no_unsupported_confirmed_result() -> None:
     assessment = catalyst_assessment(status=CatalystStatus.CONFIRMED, claim_ids=(tid("claim", "rumor"),), evidence_ids=())
 
