@@ -59,7 +59,7 @@ def test_frozen_corpus_has_realistic_complete_deterministic_zero_network_coverag
         "microsoft-fy2024-cloud-transcript-citation",
         "apple-fy2023-competition-moat-context",
         "nvidia-fy2025-blackwell-ramp-catalyst",
-        "microsoft-fy2024-document-metadata-correction",
+        "tesla-fy2024-part-iii-amendment",
         "cross-issuer-document-mismatch",
         "qualitative-theme-exposure-remains-unknown",
         "apple-substitution-counterevidence-disputes-moat",
@@ -183,6 +183,126 @@ def test_corpus_rules_reject_late_evidence_shortcuts_and_unknown_coercion(tmp_pa
     write_rows(coerced, rows)
     with pytest.raises(ValueError, match="preserve missing quantified exposure"):
         load_oz_company_intel_bench(coerced, enforce_frozen_digest=False)
+
+
+def test_amendment_rejects_original_selection_and_missing_supersession(tmp_path: Path) -> None:
+    rows = fixture_rows()
+    amendment = next(row for row in rows if row["category"] == "AMENDMENT")
+    amendment["expected_selected_evidence_ids"] = [amendment["sources"][0]["evidence_id"]]  # type: ignore[index]
+    redigest(amendment)
+    selects_original = tmp_path / "amendment-selects-original.jsonl"
+    write_rows(selects_original, rows)
+    with pytest.raises(ValueError, match="later amendment source"):
+        load_oz_company_intel_bench(selects_original, enforce_frozen_digest=False)
+
+    rows = fixture_rows()
+    amendment = next(row for row in rows if row["category"] == "AMENDMENT")
+    amendment["expected_reason_codes"] = []
+    redigest(amendment)
+    missing_supersession = tmp_path / "amendment-missing-supersession.jsonl"
+    write_rows(missing_supersession, rows)
+    with pytest.raises(ValueError, match="superseded_original"):
+        load_oz_company_intel_bench(missing_supersession, enforce_frozen_digest=False)
+
+    rows = fixture_rows()
+    amendment = next(row for row in rows if row["category"] == "AMENDMENT")
+    original = amendment["sources"][0]  # type: ignore[index]
+    amendment["sources"][1].update(  # type: ignore[index]
+        source_published_at_utc=original["source_published_at_utc"],
+        source_available_at_utc=original["source_available_at_utc"],
+        system_available_at_utc=original["system_available_at_utc"],
+    )
+    redigest(amendment)
+    not_later = tmp_path / "amendment-not-later.jsonl"
+    write_rows(not_later, rows)
+    with pytest.raises(ValueError, match="later amendment source"):
+        load_oz_company_intel_bench(not_later, enforce_frozen_digest=False)
+
+
+def test_amendment_rejects_source_chain_reference_mismatch_and_placeholder(tmp_path: Path) -> None:
+    rows = fixture_rows()
+    amendment = next(row for row in rows if row["category"] == "AMENDMENT")
+    amendment["input_payload"]["revision_reference"] = "SEC:UNRELATED:REFERENCE"  # type: ignore[index]
+    redigest(amendment)
+    mismatched = tmp_path / "amendment-reference-mismatch.jsonl"
+    write_rows(mismatched, rows)
+    with pytest.raises(ValueError, match="references must match source records"):
+        load_oz_company_intel_bench(mismatched, enforce_frozen_digest=False)
+
+    rows = fixture_rows()
+    amendment = next(row for row in rows if row["category"] == "AMENDMENT")
+    amendment["input_payload"]["original_reference"] = "SEC:UNRELATED:ORIGINAL"  # type: ignore[index]
+    redigest(amendment)
+    mismatched_original = tmp_path / "amendment-original-reference-mismatch.jsonl"
+    write_rows(mismatched_original, rows)
+    with pytest.raises(ValueError, match="references must match source records"):
+        load_oz_company_intel_bench(mismatched_original, enforce_frozen_digest=False)
+
+    rows = fixture_rows()
+    amendment = next(row for row in rows if row["category"] == "AMENDMENT")
+    amendment["input_payload"]["revision_relation"] = "SUPERSEDES_WITHOUT_SOURCE_CHAIN"  # type: ignore[index]
+    redigest(amendment)
+    invalid_relation = tmp_path / "amendment-invalid-relation.jsonl"
+    write_rows(invalid_relation, rows)
+    with pytest.raises(ValueError, match="source-chain semantics"):
+        load_oz_company_intel_bench(invalid_relation, enforce_frozen_digest=False)
+
+    rows = fixture_rows()
+    amendment = next(row for row in rows if row["category"] == "AMENDMENT")
+    amendment["input_payload"]["revision_reference"] = "SEC-SUBMISSIONS:CIK0000789019:***"  # type: ignore[index]
+    amendment["sources"][1]["source_reference"] = "SEC-SUBMISSIONS:CIK0000789019:***"  # type: ignore[index]
+    redigest(amendment)
+    placeholder = tmp_path / "amendment-placeholder-reference.jsonl"
+    write_rows(placeholder, rows)
+    with pytest.raises(ValueError, match="placeholder"):
+        load_oz_company_intel_bench(placeholder, enforce_frozen_digest=False)
+
+    rows = fixture_rows()
+    amendment = next(row for row in rows if row["category"] == "AMENDMENT")
+    amendment["sources"][1]["source_locator"] = "https://www.sec.gov/***"  # type: ignore[index]
+    redigest(amendment)
+    placeholder_locator = tmp_path / "amendment-placeholder-locator.jsonl"
+    write_rows(placeholder_locator, rows)
+    with pytest.raises(ValueError, match="placeholder"):
+        load_oz_company_intel_bench(placeholder_locator, enforce_frozen_digest=False)
+
+
+def test_mismatch_exposure_and_counterevidence_mutations_fail_closed(tmp_path: Path) -> None:
+    rows = fixture_rows()
+    mismatch = next(row for row in rows if row["category"] == "MISMATCH")
+    mismatch["expected_status"] = "DISPUTED"
+    redigest(mismatch)
+    promotable_mismatch = tmp_path / "mismatch-not-fail-closed.jsonl"
+    write_rows(promotable_mismatch, rows)
+    with pytest.raises(ValueError, match="mismatch case must be non-promotable"):
+        load_oz_company_intel_bench(promotable_mismatch, enforce_frozen_digest=False)
+
+    rows = fixture_rows()
+    exposure = next(row for row in rows if row["category"] == "EXPOSURE")
+    exposure["input_payload"].pop("numerator_value")  # type: ignore[union-attr]
+    redigest(exposure)
+    incomplete_exposure = tmp_path / "exposure-missing-numerator.jsonl"
+    write_rows(incomplete_exposure, rows)
+    with pytest.raises(ValueError, match="numerator and denominator"):
+        load_oz_company_intel_bench(incomplete_exposure, enforce_frozen_digest=False)
+
+    rows = fixture_rows()
+    exposure = next(row for row in rows if row["category"] == "EXPOSURE")
+    exposure["input_payload"].pop("denominator_value")  # type: ignore[union-attr]
+    redigest(exposure)
+    missing_denominator = tmp_path / "exposure-missing-denominator.jsonl"
+    write_rows(missing_denominator, rows)
+    with pytest.raises(ValueError, match="numerator and denominator"):
+        load_oz_company_intel_bench(missing_denominator, enforce_frozen_digest=False)
+
+    rows = fixture_rows()
+    counterevidence = next(row for row in rows if row["category"] == "COUNTEREVIDENCE")
+    counterevidence["expected_selected_evidence_ids"] = [counterevidence["sources"][0]["evidence_id"]]  # type: ignore[index]
+    redigest(counterevidence)
+    selected_refutation = tmp_path / "counterevidence-selected.jsonl"
+    write_rows(selected_refutation, rows)
+    with pytest.raises(ValueError, match="cannot select refuting evidence"):
+        load_oz_company_intel_bench(selected_refutation, enforce_frozen_digest=False)
 
 
 def test_parser_preserves_nonempty_protected_state_and_has_no_execution_imports(tmp_path: Path) -> None:

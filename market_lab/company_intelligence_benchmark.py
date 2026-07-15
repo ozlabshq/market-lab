@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
 import re
@@ -14,7 +15,7 @@ from .agency_contracts import TypedID, canonical_bytes, canonical_json, sha256_h
 
 SCHEMA_OZ_COMPANY_INTEL_BENCH_V1 = "oz-company-intel-bench.v1"
 SCHEMA_OZ_COMPANY_INTEL_SOURCE_V1 = "oz-company-intel-source.v1"
-OZ_COMPANY_INTEL_BENCH_V1_BYTE_SHA256 = "537f3d7d038de4c207eb94c001b1fc71c67c25b129ce99ed3d8cd2bb2bb9eec3"
+OZ_COMPANY_INTEL_BENCH_V1_BYTE_SHA256 = "5dc70527198a81433dbb485b0eedd365fbe6910e39f2091580f4139dddc50313"
 SAFETY_MODE_RESEARCH_MOCK_ONLY = "research_mock_only"
 
 
@@ -41,6 +42,7 @@ class FrozenSourceKind(Enum):
 
 _ALLOWED_EXPECTED_STATUSES = frozenset({"PROMOTABLE", "VALID", "ACTIVE_AMENDMENT", "NON_PROMOTABLE", "UNKNOWN", "DISPUTED"})
 _FORMULAIC_ID_RE = re.compile(r"^(?:case|row|source|evidence)[-_]?\d+$", re.IGNORECASE)
+_PLACEHOLDER_REFERENCE_RE = re.compile(r"(?:\*|<[^>]+>|\{[^}]+}|\b(?:n/?a|placeholder|tbd|todo|unknown)\b)", re.IGNORECASE)
 _SOURCE_KEYS = frozenset(
     {
         "schema_version",
@@ -110,6 +112,23 @@ def _strings(value: Any, field_name: str, *, nonempty: bool = False) -> tuple[st
     return result
 
 
+def _require_concrete_reference(value: str, field_name: str) -> None:
+    if _PLACEHOLDER_REFERENCE_RE.search(value):
+        raise ValueError(f"{field_name} contains placeholder provenance")
+
+
+def _require_exposure_value(value: Any, field_name: str) -> Decimal:
+    if isinstance(value, bool) or value is None or (isinstance(value, str) and not value.strip()):
+        raise ValueError("exposure requires complete numerator and denominator semantics")
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise ValueError(f"{field_name} must be a finite numeric value") from None
+    if not parsed.is_finite():
+        raise ValueError(f"{field_name} must be a finite numeric value")
+    return parsed
+
+
 @dataclass(frozen=True)
 class FrozenSourceRecord:
     evidence_id: TypedID
@@ -141,6 +160,8 @@ class FrozenSourceRecord:
                 raise ValueError(f"{field_name} is required")
         if _FORMULAIC_ID_RE.fullmatch(self.source_reference):
             raise ValueError("formulaic source_reference is forbidden")
+        _require_concrete_reference(self.source_reference, "source_reference")
+        _require_concrete_reference(self.source_locator, "source_locator")
         parsed = urlparse(self.source_locator)
         if parsed.scheme != "https" or not parsed.netloc:
             raise ValueError("source_locator must be an absolute HTTPS URL")
@@ -334,18 +355,56 @@ def _validate_corpus(cases: tuple[CompanyIntelBenchmarkCase, ...]) -> None:
 
         if case.expected_status in {"PROMOTABLE", "VALID", "ACTIVE_AMENDMENT"} and not selected_ids:
             raise ValueError(f"{case.case_id} promotable outcome requires selected evidence")
+        if case.category is BenchmarkCategory.EXPOSURE:
+            if "numerator_value" not in case.input_payload or "denominator_value" not in case.input_payload:
+                raise ValueError("exposure requires complete numerator and denominator semantics")
+            numerator = _require_exposure_value(case.input_payload["numerator_value"], "numerator_value")
+            denominator = _require_exposure_value(case.input_payload["denominator_value"], "denominator_value")
+            if numerator < 0 or denominator <= 0 or numerator > denominator:
+                raise ValueError("exposure numerator and denominator have invalid bounds")
         if case.category is BenchmarkCategory.UNKNOWN and (
             case.expected_status != "UNKNOWN" or "missing_quantified_exposure" not in case.expected_reason_codes
         ):
             raise ValueError("UNKNOWN case must preserve missing quantified exposure")
-        if case.category is BenchmarkCategory.MISMATCH and not any(reason.endswith("_mismatch") for reason in case.expected_reason_codes):
-            raise ValueError("mismatch case must declare an explicit mismatch reason")
+        if case.category is BenchmarkCategory.MISMATCH:
+            if case.expected_status != "NON_PROMOTABLE" or selected_ids:
+                raise ValueError("mismatch case must be non-promotable and select no evidence")
+            if not any(reason.endswith("_mismatch") for reason in case.expected_reason_codes):
+                raise ValueError("mismatch case must declare an explicit mismatch reason")
         if case.category is BenchmarkCategory.COUNTEREVIDENCE and (
             case.expected_status != "DISPUTED" or "refuting_counterevidence" not in case.expected_reason_codes
         ):
             raise ValueError("counterevidence case must be disputed")
-        if case.category is BenchmarkCategory.AMENDMENT and (len(case.sources) < 2 or case.expected_status != "ACTIVE_AMENDMENT"):
-            raise ValueError("amendment case must identify an active amended source")
+        if case.category is BenchmarkCategory.COUNTEREVIDENCE and selected_ids:
+            raise ValueError("disputed counterevidence cannot select refuting evidence")
+        if case.category is BenchmarkCategory.AMENDMENT:
+            if len(case.sources) != 2 or case.expected_status != "ACTIVE_AMENDMENT":
+                raise ValueError("amendment case must identify one original and one active amendment source")
+            payload = case.input_payload
+            original_reference = payload.get("original_reference")
+            revision_reference = payload.get("revision_reference")
+            if not isinstance(original_reference, str) or not isinstance(revision_reference, str):
+                raise ValueError("amendment references must be non-empty strings")
+            if payload.get("revision") not in {"AMENDMENT", "CORRECTION"} or payload.get("revision_relation") not in {"AMENDS", "CORRECTS"}:
+                raise ValueError("amendment input must declare amendment or correction source-chain semantics")
+            _require_concrete_reference(original_reference, "original_reference")
+            _require_concrete_reference(revision_reference, "revision_reference")
+            original_sources = tuple(source for source in case.sources if source.source_reference == original_reference)
+            revision_sources = tuple(source for source in case.sources if source.source_reference == revision_reference)
+            if original_reference == revision_reference or len(original_sources) != 1 or len(revision_sources) != 1:
+                raise ValueError("amendment input references must match source records exactly once")
+            original_source = original_sources[0]
+            revision_source = revision_sources[0]
+            if (
+                _dt(revision_source.source_published_at_utc, "source_published_at_utc")
+                <= _dt(original_source.source_published_at_utc, "source_published_at_utc")
+                or _dt(revision_source.system_available_at_utc, "system_available_at_utc")
+                <= _dt(original_source.system_available_at_utc, "system_available_at_utc")
+                or selected_ids != (revision_source.evidence_id,)
+            ):
+                raise ValueError("amendment must select only the later amendment source")
+            if "superseded_original" not in case.expected_reason_codes:
+                raise ValueError("amendment must declare superseded_original semantics")
 
 
 def load_oz_company_intel_bench(path: Path, *, enforce_frozen_digest: bool = True) -> tuple[CompanyIntelBenchmarkCase, ...]:
