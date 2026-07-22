@@ -73,6 +73,47 @@ class ComputeSpyBenchmarkTests(unittest.TestCase):
         self.assertTrue(abs(bm_equity - 100_000.0 * 106.0 / 104.0) < 1e-9)
         self.assertTrue(abs(bm_ret - (106.0 / 104.0 - 1)) < 1e-9)
 
+    def test_stale_weekend_start_date_falls_back_to_latest_bar_cash_neutral(self):
+        """Weekend date won't match any SPY bar → fall back to latest bar, cash-neutral."""
+        prices = [100.0, 102.0, 104.0, 103.0]
+        bars = bars_from_prices(prices, start_date=date(2024, 1, 1))
+        # bars dates: Mon-Fri, Jan 1-4, 2024
+        # A Saturday (Jan 6, 2024) matches no bar
+        weekend = date(2024, 1, 6)
+        from unittest.mock import patch
+        with patch("market_lab.data.fetch_prices", return_value=(bars, "cache")):
+            result = compute_spy_benchmark(starting_cash=100_000.0, start_date=weekend)
+        # Fallback to bars[-1] → start_price = current_price = 103.0 → cash-neutral
+        self.assertEqual(result["start_price"], 103.0)
+        self.assertEqual(result["current_price"], 103.0)
+        self.assertEqual(result["benchmark_equity"], 100_000.0)
+        self.assertEqual(result["benchmark_return"], 0.0)
+        self.assertEqual(result["data_source"], "cache")
+
+    def test_future_start_date_falls_back_to_latest_bar_cash_neutral(self):
+        """Future date with no bars → fall back to latest bar, cash-neutral."""
+        prices = [100.0, 102.0, 104.0, 103.0]
+        bars = bars_from_prices(prices, start_date=date(2024, 1, 1))
+        future = date(2099, 1, 1)
+        from unittest.mock import patch
+        with patch("market_lab.data.fetch_prices", return_value=(bars, "synthetic")):
+            result = compute_spy_benchmark(starting_cash=50_000.0, start_date=future)
+        self.assertEqual(result["start_price"], 103.0)
+        self.assertEqual(result["current_price"], 103.0)
+        self.assertEqual(result["benchmark_equity"], 50_000.0)
+        self.assertEqual(result["benchmark_return"], 0.0)
+
+    def test_start_date_before_first_bar_matches_first_bar(self):
+        """Date before the first bar should match the first bar (oldest available)."""
+        prices = [105.0, 107.0, 109.0]
+        bars = bars_from_prices(prices, start_date=date(2024, 6, 1))
+        early_date = date(2024, 1, 1)  # before any bar
+        from unittest.mock import patch
+        with patch("market_lab.data.fetch_prices", return_value=(bars, "yfinance")):
+            result = compute_spy_benchmark(starting_cash=100_000.0, start_date=early_date)
+        self.assertEqual(result["start_price"], 105.0)
+        self.assertEqual(result["start_date_str"], bars[0].date.isoformat())
+
 
 class RenderReportBenchmarkTests(unittest.TestCase):
     def test_render_report_includes_spy_benchmark_when_provided(self):

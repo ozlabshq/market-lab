@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from market_lab.backtest import moving_average_cross_backtest
 from market_lab.broker import load_order_candidates, load_portfolio
-from market_lab.data import Bar, fetch_prices, load_cached_prices, price_path
+from market_lab.data import Bar, fetch_prices, load_cached_prices, price_path, save_prices
 from market_lab.report import render_report
 from market_lab.signals import generate_ensemble_signal, generate_rsi_pullback_signal
 
@@ -67,6 +67,20 @@ class MarketLabHardeningTests(unittest.TestCase):
                 cached = load_cached_prices("FAKE")
                 self.assertEqual(cached, [])
                 self.assertTrue((synthetic_dir / "FAKE.csv").exists())
+
+    def test_cached_price_loader_filters_nan_vendor_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            price_dir = Path(d) / "prices"
+            synthetic_dir = Path(d) / "synthetic_prices"
+            with patch("market_lab.data.PRICE_DIR", price_dir), patch("market_lab.data.SYNTHETIC_PRICE_DIR", synthetic_dir):
+                save_prices("NAN", [
+                    Bar(date(2024, 1, 1), 100.0, 101.0, 99.0, 100.0, 1_000),
+                    Bar(date(2024, 1, 2), float('nan'), float('nan'), float('nan'), float('nan'), 0),
+                    Bar(date(2024, 1, 3), 102.0, 103.0, 101.0, 102.0, 1_000),
+                ])
+                cached = load_cached_prices("NAN")
+                self.assertEqual([b.date for b in cached], [date(2024, 1, 1), date(2024, 1, 3)])
+                self.assertTrue(all(b.close == b.close and b.close > 0 for b in cached))
 
     def test_market_lab_data_dir_env_overrides_all_default_paths_before_import(self):
         with tempfile.TemporaryDirectory() as d:

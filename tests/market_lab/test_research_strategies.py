@@ -2,11 +2,13 @@ import tempfile
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
+from typing import cast
 
 from market_lab.data import Bar
 from market_lab.signals import (
     Signal,
     cross_sectional_momentum_ranks,
+    generate_ensemble_signal,
     generate_strategy_signals,
     generate_tsmom_signal,
     generate_vt_trend_signal,
@@ -52,6 +54,56 @@ class ResearchStrategyTests(unittest.TestCase):
         self.assertEqual(low_sig.action, "BUY")
         self.assertEqual(high_sig.action, "BUY")
         self.assertGreater(low_sig.target_weight, high_sig.target_weight)
+
+    def test_tsmom_spy_bear_market_blocks_buy(self):
+        asset = [100 + i * 0.30 for i in range(180)]
+        spy = [140 - i * 0.18 for i in range(180)]
+        sig = generate_tsmom_signal("ASSET", bars_from_prices(asset), spy_bars=bars_from_prices(spy))
+        self.assertEqual(sig.action, "SELL")
+        self.assertIn("SPY regime guard", sig.reason)
+        spy_momentum = cast(float, sig.evidence["spy_momentum"])
+        self.assertLessEqual(spy_momentum, 0.0)
+
+    def test_tsmom_underperforming_spy_blocks_positive_absolute_momentum(self):
+        asset = [100 + i * 0.15 for i in range(180)]
+        spy = [100 + i * 0.35 for i in range(180)]
+        sig = generate_tsmom_signal("LAG", bars_from_prices(asset), spy_bars=bars_from_prices(spy))
+        self.assertEqual(sig.action, "HOLD")
+        self.assertIn("relative-momentum guard", sig.reason)
+        self.assertLessEqual(cast(float, sig.evidence["spy_relative_momentum"]), 0.0)
+
+    def test_tsmom_allows_buy_when_asset_beats_positive_spy(self):
+        asset = [100 + i * 0.45 for i in range(180)]
+        spy = [100 + i * 0.10 for i in range(180)]
+        sig = generate_tsmom_signal("LEAD", bars_from_prices(asset), spy_bars=bars_from_prices(spy))
+        self.assertEqual(sig.action, "BUY")
+        self.assertGreater(cast(float, sig.evidence["spy_relative_momentum"]), 0.0)
+
+    def test_tsmom_spy_filter_has_no_future_lookahead(self):
+        asset = [100 + i * 0.45 for i in range(200)]
+        spy = [100 + i * 0.10 for i in range(200)]
+        baseline = generate_tsmom_signal("NL", bars_from_prices(asset[:160]), spy_bars=bars_from_prices(spy[:160]))
+        mutated_future_spy = spy[:160] + [1000 + i * 50 for i in range(40)]
+        mutated = generate_tsmom_signal("NL", bars_from_prices(asset[:160]), spy_bars=bars_from_prices(mutated_future_spy[:160]))
+        self.assertEqual(baseline.action, mutated.action)
+        self.assertEqual(baseline.evidence["spy_momentum"], mutated.evidence["spy_momentum"])
+
+    def test_ensemble_spy_overlay_downgrades_underperforming_buy(self):
+        asset = [100 + i * 0.15 for i in range(180)]
+        spy = [100 + i * 0.35 for i in range(180)]
+        sig = generate_ensemble_signal("LAG", bars_from_prices(asset), spy_bars=bars_from_prices(spy))
+        self.assertNotEqual(sig.action, "BUY")
+        self.assertIn("SPY guard", sig.reason)
+
+    def test_cross_sectional_momentum_can_rank_excess_return_over_spy(self):
+        spy = bars_from_prices([100 + i * 0.30 for i in range(180)])
+        ranks = cross_sectional_momentum_ranks({
+            "BEATER": bars_from_prices([100 + i * 0.45 for i in range(180)]),
+            "LAGGER": bars_from_prices([100 + i * 0.10 for i in range(180)]),
+        }, formation_days=126, skip_days=21, spy_bars=spy)
+        self.assertEqual(ranks[0].symbol, "BEATER")
+        self.assertGreater(ranks[0].score, 0.0)
+        self.assertLess(ranks[1].score, 0.0)
 
     def test_cross_sectional_momentum_uses_one_month_skip(self):
         steady_winner = [100 + i * 0.40 for i in range(180)]

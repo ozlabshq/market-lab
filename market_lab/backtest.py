@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import sqrt
+from math import isfinite, sqrt
 from statistics import mean, pstdev
 from typing import Callable
 
@@ -42,8 +42,9 @@ def _stats(symbol: str, strategy: str, bars: list[Bar], equity_curve: list[float
         total_return = final_equity / initial_cash - 1
     benchmark_base = benchmark_base_price if benchmark_base_price and benchmark_base_price > 0 else bars[benchmark_start_index].close if bars and benchmark_start_index < len(bars) and bars[benchmark_start_index].close > 0 else bars[0].close if bars else 1.0
     benchmark_return = bars[-1].close / benchmark_base - 1 if bars and benchmark_base > 0 else 0.0
-    rets = [equity_curve[i] / equity_curve[i - 1] - 1 for i in range(1, len(equity_curve)) if equity_curve[i - 1] > 0]
-    sharpe = (mean(rets) / pstdev(rets) * sqrt(252)) if len(rets) > 2 and pstdev(rets) > 0 else 0.0
+    rets = [float(equity_curve[i]) / float(equity_curve[i - 1]) - 1 for i in range(1, len(equity_curve)) if float(equity_curve[i - 1]) > 0 and isfinite(float(equity_curve[i])) and isfinite(float(equity_curve[i - 1]))]
+    ret_std = pstdev(rets) if len(rets) > 2 else 0.0
+    sharpe = (mean(rets) / ret_std * sqrt(252)) if len(rets) > 2 and ret_std > 0 else 0.0
     return BacktestResult(symbol, trades, total_return, benchmark_return, max_drawdown(equity_curve), sharpe, final_equity, strategy)
 
 

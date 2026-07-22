@@ -41,6 +41,7 @@ from market_lab.signals import (
     generate_tsmom_signal,
     rank_signals,
 )
+from market_lab.verifier import apply_verifier_guard
 
 
 def _source_is_synthetic(source: str) -> bool:
@@ -55,14 +56,41 @@ def _dedupe_candidates(candidates: list[OrderCandidate]) -> list[OrderCandidate]
     return list(by_key.values())
 
 
-def _candidate_from_signal(sig, signal_date: str, portfolio_equity: float) -> OrderCandidate | None:
-    if sig.action != "BUY" or sig.close <= 0:
+def _candidate_from_signal(sig, signal_date: str, portfolio_equity: float, portfolio=None) -> OrderCandidate | None:
+    if sig.close <= 0:
         return None
-    target_notional = min(RISK.max_trade_notional, max(RISK.min_trade_notional, portfolio_equity * max(sig.target_weight, 0.02)))
-    qty = max(1, int(target_notional // sig.close))
-    if qty * sig.close < RISK.min_trade_notional:
-        return None
-    return OrderCandidate("BUY", sig.symbol, qty, sig.strategy, sig.confidence, sig.reason, signal_date, sig.close)
+    if sig.action == "BUY":
+        target_notional = min(RISK.max_trade_notional, max(RISK.min_trade_notional, portfolio_equity * max(sig.target_weight, 0.02)))
+        qty = max(1, int(target_notional // sig.close))
+        if qty * sig.close < RISK.min_trade_notional:
+            return None
+        return OrderCandidate("BUY", sig.symbol, qty, sig.strategy, sig.confidence, sig.reason, signal_date, sig.close)
+    if sig.action == "SELL" and portfolio is not None:
+        pos = portfolio.positions.get(sig.symbol.upper())
+        if not pos or pos.quantity <= 0:
+            return None
+        max_qty = max(1, int(RISK.max_trade_notional // sig.close))
+        qty = min(pos.quantity, max_qty)
+        if qty * sig.close < RISK.min_trade_notional:
+            return None
+        return OrderCandidate("SELL", sig.symbol, qty, sig.strategy, sig.confidence, sig.reason, signal_date, sig.close)
+    return None
+
+
+def _spy_guarded_tsmom(spy_bars):
+    def _signal(symbol, hist):
+        spy_history = [bar for bar in spy_bars if hist and bar.date <= hist[-1].date] if spy_bars else None
+        return generate_tsmom_signal(symbol, hist, spy_bars=spy_history)
+    _signal.__name__ = "generate_tsmom_spy_guarded_signal"
+    return _signal
+
+
+def _ensemble_signal_for_verifier(spy_bars):
+    def _signal(symbol, hist):
+        spy_history = [bar for bar in spy_bars if hist and bar.date <= hist[-1].date] if spy_bars else None
+        return generate_ensemble_signal(symbol, hist, spy_bars=spy_history)
+    _signal.__name__ = "generate_ensemble_signal_for_verifier"
+    return _signal
 
 
 def _dedupe_option_candidates(candidates: list[OptionPaperCandidate]) -> list[OptionPaperCandidate]:
@@ -195,16 +223,18 @@ def main() -> int:
         factors_by_symbol[symbol] = factor
         sources[f"{symbol}:factors"] = factor_source
         prices[symbol] = bars[-1].close
-        ensemble_signals.append(apply_factor_overlay(generate_ensemble_signal(symbol, bars), factor))
-        family_signals[symbol] = generate_strategy_signals(symbol, bars)
-        backtests.append(run_signal_backtest(symbol, bars, generate_tsmom_signal, min_history=140))
-        backtests.append(moving_average_cross_backtest(symbol, bars))
 
-    # Ensure benchmark bars are available for the SPY-relative exit governor path.
     spy_bars = bars_by_symbol.get("SPY")
     if spy_bars is None:
         spy_bars, spy_source = fetch_prices("SPY", days=args.days, prefer_network=args.network)
         sources["SPY:benchmark_guard"] = spy_source
+
+    for symbol, bars in bars_by_symbol.items():
+        factor = factors_by_symbol[symbol]
+        ensemble_signals.append(apply_factor_overlay(generate_ensemble_signal(symbol, bars, spy_bars=spy_bars), factor))
+        family_signals[symbol] = generate_strategy_signals(symbol, bars, spy_bars=spy_bars)
+        backtests.append(run_signal_backtest(symbol, bars, _spy_guarded_tsmom(spy_bars), min_history=140))
+        backtests.append(moving_average_cross_backtest(symbol, bars))
 
     if (args.queue_order_candidates or args.execute_pending_candidates) and args.require_live_data:
         synthetic_symbols = sorted(sym for sym, source in sources.items() if _source_is_synthetic(source))
@@ -219,8 +249,9 @@ def main() -> int:
     if args.queue_order_candidates:
         today = max(bars[-1].date.isoformat() for bars in bars_by_symbol.values() if bars)
         equity = portfolio.equity(prices)
-        for sig in [s for s in rank_signals(ensemble_signals) if s.action == "BUY"][: args.max_orders]:
-            candidate = _candidate_from_signal(sig, today, equity)
+        ranked_for_orders = rank_signals(ensemble_signals)
+        for sig in [s for s in ranked_for_orders if s.action == "SELL"]:
+            candidate = _candidate_from_signal(sig, today, equity, portfolio=portfolio)
             if candidate:
                 queued_candidates.append(candidate)
         if args.spy_relative_exit_trail is not None:
@@ -234,10 +265,18 @@ def main() -> int:
             )
             if exit_candidates:
                 queued_candidates.extend(exit_candidates)
+        buy_slots = max(args.max_orders - len(queued_candidates), 0)
+        verifier_func = _ensemble_signal_for_verifier(spy_bars)
+        for sig in [s for s in ranked_for_orders if s.action == "BUY"][:buy_slots]:
+            candidate = _candidate_from_signal(sig, today, equity, portfolio=portfolio)
+            if candidate:
+                allowed, _ = apply_verifier_guard(candidate, bars_by_symbol.get(sig.symbol), verifier_func, spy_bars=spy_bars)
+                if allowed:
+                    queued_candidates.append(candidate)
         if queued_candidates:
             save_order_candidates(_dedupe_candidates(load_order_candidates() + queued_candidates))
 
-    cross_sectional = cross_sectional_momentum_ranks(bars_by_symbol)
+    cross_sectional = cross_sectional_momentum_ranks(bars_by_symbol, spy_bars=spy_bars)
     portfolio = load_portfolio()
     if args.fetch_options and OPTIONS_RISK.allow_options and OPTIONS_RISK.paper_options_enabled and not OPTIONS_RISK.live_options_enabled:
         option_symbols = [sig.symbol for sig in rank_signals(ensemble_signals) if sig.action in {"BUY", "HOLD"}]
