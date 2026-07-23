@@ -1,0 +1,8 @@
+{
+  "schema_version": "mlab-company-web-evidence-compatibility.v1",
+  "status": "ACCEPTED",
+  "mode": "live",
+  "accepted_schema_versions": ["mlab-evidence.v2", "web-segment.v1", "web-snapshot.v1"],
+  "verified_evidence_ids": ["evidence-contrary", "evidence-filing", "evidence-market", "evidence-peer"],
+  "reason_codes": []
+}

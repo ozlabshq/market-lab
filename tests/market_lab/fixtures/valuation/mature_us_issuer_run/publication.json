@@ -1,0 +1,15 @@
+{
+  "schema_version": "mlab-company-publication.v1",
+  "run_id": "fixture-company-run",
+  "draft_digest": "d2414cc17bf8c576a1202bfa49dde0aeb5141ffed846d625ebbb18337ff7661b",
+  "review_ok": true,
+  "replay_ok": true,
+  "outcomes": [
+    {
+      "case_id": "fixture-company-ready",
+      "candidate_id": "fixture-candidate",
+      "validation_outcome": "DRAFT_READY_PENDING_REVIEW",
+      "outcome": "READY"
+    }
+  ]
+}
