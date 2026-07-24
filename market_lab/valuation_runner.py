@@ -311,6 +311,16 @@ def _derived_outputs_ok(store: ValuationStore, memo: Mapping[str, Any], request:
             reverse_dcf=reverse_dcf,
             safety_attestation=memo.get("safety_attestation", {}),
         )
+        safety_attestation = memo.get("safety_attestation", {})
+        gate_rows = [
+            {"gate_id": "identity", "status": "pass" if validation["company"] else "fail", "reason_codes": [] if validation["company"] else ["company_candidate_not_ready"]},
+            {"gate_id": "provenance", "status": "pass" if validation["ok"] else "fail", "reason_codes": validation["reason_codes"]},
+            {"gate_id": "scenario", "status": "warn" if scenario_reasons else "pass", "reason_codes": scenario_reasons},
+            {"gate_id": "catalyst_invalidation", "status": "pass" if not expected_memo["unknowns_and_blockers"] else "warn", "reason_codes": expected_memo["unknowns_and_blockers"]},
+            {"gate_id": "no_false_precision", "status": "pass" if _no_false_precision_ok(expected_memo) else "fail", "reason_codes": [] if _no_false_precision_ok(expected_memo) else ["no_false_precision_failed"]},
+            {"gate_id": "safety", "status": "pass" if safety_attestation.get("zero_execution_side_effects") is True else "fail", "reason_codes": []},
+            {"gate_id": "independent_review", "status": "warn", "reason_codes": ["review_pending"]},
+        ]
         expected = {
             "input_facts.json": {"schema_version": "mlab-valuation-input-facts.v1", "facts": validation["facts"], "provenance_summary": validation["provenance_summary"]},
             "normalized_financials.json": {"schema_version": "mlab-normalized-financials.v1", "capital_structure": capital},
@@ -321,6 +331,7 @@ def _derived_outputs_ok(store: ValuationStore, memo: Mapping[str, Any], request:
             "scenarios.json": {"schema_version": "mlab-scenarios.v1", "scenarios": [{key: value for key, value in row.items() if key != "method_result"} for row in scenario_results]},
             "catalysts.json": {"schema_version": "mlab-catalysts.v1", "catalysts": payload.get("catalysts", [])},
             "invalidations.json": {"schema_version": "mlab-invalidations.v1", "invalidations": payload.get("invalidations", [])},
+            "gate_report.json": {"schema_version": "mlab-valuation-gates.v1", "gates": gate_rows},
             "memo.json": expected_memo,
         }
         return all(store.read_json(name) == artifact for name, artifact in expected.items())
