@@ -8,7 +8,7 @@ from typing import Any
 
 from market_lab.prediction_markets.adapters import FrozenFileAdapter
 from market_lab.prediction_markets.config import assert_below_root, assert_write_path
-from market_lab.prediction_markets.errors import ConflictError, IntegrityError, NotFoundError, PredictionMarketError, SchemaError
+from market_lab.prediction_markets.errors import ConflictError, IntegrityError, NotFoundError, PredictionMarketError, SchemaError, PathEscapeError
 from market_lab.prediction_markets.models import canonical_json_bytes, normalize_descriptor, parse_json_bytes, record_from_dict, record_to_dict, sha256_hex, strict_raw_body, validate_record_hash
 
 
@@ -156,6 +156,8 @@ def verify(root: Path, *, strict: bool = False) -> dict[str, Any]:
     quarantine_errors: dict[str, dict[str, Any]] = {}
     try:
         _verify_inventory(root)
+    except PathEscapeError:
+        raise
     except PredictionMarketError as exc:
         errors.append({"path": exc.path or str(root), "error_code": exc.error_code, "message": exc.message})
     quarantines = []
@@ -234,7 +236,18 @@ def _verify_inventory(root: Path) -> None:
         return
     allowed_root = {"raw", "normalized", "quarantine", "reports", "paper"}
     for path in sorted(root.rglob("*")):
+        # Check both the reported path and its real resolved target (block symlink escapes)
         assert_below_root(root, path)
+        # Detect symlinks (including files and folders) explicitly
+        if path.is_symlink():
+            real_target = path.resolve(strict=True)
+            assert_below_root(root, real_target)
+        try:
+            resolved = path.resolve(strict=True)
+        except FileNotFoundError:
+            # Maybe a broken symlink, treat as outside root
+            raise PathEscapeError("broken symlink or path escapes prediction data root", path=str(path))
+        assert_below_root(root, resolved)
         rel = path.relative_to(root).parts
         if not rel:
             continue

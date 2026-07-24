@@ -107,6 +107,7 @@ def _build_wheel(tmp_path: Path) -> Path:
     env = _child_env()
     try:
         subprocess.run([str(python), "-m", "ensurepip", "--upgrade"], check=True, cwd=tmp_path, env=env)
+        subprocess.run([str(python), "-m", "pip", "install", "wheel"], check=True, cwd=tmp_path, env=env)
         subprocess.run([str(python), "-m", "pip", "wheel", "--no-deps", "--no-build-isolation", "-w", str(out), str(source)], check=True, cwd=tmp_path, env=env)
         wheels = sorted(out.glob("*.whl"))
         assert len(wheels) == 1
