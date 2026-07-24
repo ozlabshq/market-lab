@@ -1,0 +1,16 @@
+{
+  "schema_version": "mlab-company-drafts.v1",
+  "drafts": [
+    {
+      "candidate_id": "fixture-candidate",
+      "builder_id": "company-builder",
+      "theme": "Durable enterprise software",
+      "issuer": "Fixture Systems, Inc.",
+      "security": "FIX",
+      "discovery_rationale": "Recurring revenue and evidenced cash conversion",
+      "evidence_ids": ["evidence-filing", "evidence-market", "evidence-peer"],
+      "benchmark_case_id": "fixture-company-ready",
+      "draft_packet_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  ]
+}

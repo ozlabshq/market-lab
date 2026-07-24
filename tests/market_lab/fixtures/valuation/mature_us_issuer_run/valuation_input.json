@@ -1,0 +1,216 @@
+{
+  "schema_version": "mlab-valuation-input.v1",
+  "candidate_id": "fixture-candidate",
+  "issuer_id": "0000000001",
+  "security_id": "FIX:XNAS:COMMON",
+  "analysis_cutoff_utc": "2025-12-31T23:59:59Z",
+  "research_only": true,
+  "facts": [
+    {
+      "fact_id": "fact-revenue",
+      "concept": "revenue",
+      "value": "1000",
+      "units": "USD",
+      "period_start": "2025-01-01T00:00:00Z",
+      "period_end": "2025-12-31T00:00:00Z",
+      "available_at_utc": "2025-12-15T21:00:00Z",
+      "source_snapshot_id": "snapshot-filing",
+      "source_segment_id": "segment-revenue",
+      "evidence_id": "evidence-filing",
+      "exact_locator": "10-K accession 0001, revenue table, FY2025",
+      "source_status": "verified",
+      "transformation": "none"
+    },
+    {
+      "fact_id": "fact-net-income",
+      "concept": "net_income_common",
+      "value": "20",
+      "units": "USD",
+      "period_start": "2025-01-01T00:00:00Z",
+      "period_end": "2025-12-31T00:00:00Z",
+      "available_at_utc": "2025-12-15T21:00:00Z",
+      "source_snapshot_id": "snapshot-filing",
+      "source_segment_id": "segment-income",
+      "evidence_id": "evidence-filing",
+      "exact_locator": "10-K accession 0001, income statement, FY2025",
+      "source_status": "verified",
+      "transformation": "none"
+    },
+    {
+      "fact_id": "fact-market-cap",
+      "concept": "market_cap",
+      "value": "1400",
+      "units": "USD",
+      "period_start": "2025-12-31T21:00:00Z",
+      "period_end": "2025-12-31T21:00:00Z",
+      "available_at_utc": "2025-12-31T21:01:00Z",
+      "source_snapshot_id": "snapshot-market",
+      "source_segment_id": "segment-close",
+      "evidence_id": "evidence-market",
+      "exact_locator": "official close FIX 2025-12-31 multiplied by current diluted shares",
+      "source_status": "verified",
+      "transformation": "none"
+    },
+    {
+      "fact_id": "fact-capital",
+      "concept": "capital_structure_bundle",
+      "value": "25",
+      "units": "USD",
+      "period_start": "2025-12-31T00:00:00Z",
+      "period_end": "2025-12-31T00:00:00Z",
+      "available_at_utc": "2025-12-15T21:00:00Z",
+      "source_snapshot_id": "snapshot-filing",
+      "source_segment_id": "segment-balance-sheet",
+      "evidence_id": "evidence-filing",
+      "exact_locator": "10-K accession 0001, debt cash leases preferred and NCI table",
+      "source_status": "verified",
+      "transformation": "none"
+    },
+    {
+      "fact_id": "fact-shares",
+      "concept": "current_diluted_shares",
+      "value": "10",
+      "units": "shares",
+      "period_start": "2025-12-15T00:00:00Z",
+      "period_end": "2025-12-15T00:00:00Z",
+      "available_at_utc": "2025-12-15T21:00:00Z",
+      "source_snapshot_id": "snapshot-filing",
+      "source_segment_id": "segment-shares",
+      "evidence_id": "evidence-filing",
+      "exact_locator": "10-K cover and dilution note, split-adjusted",
+      "source_status": "verified",
+      "transformation": "none"
+    }
+  ],
+  "capital_structure": {
+    "market_cap": "1400",
+    "short_term_debt": "5",
+    "long_term_debt": "15",
+    "lease_adjustment": "5",
+    "preferred_equity": "0",
+    "noncontrolling_interest": "0",
+    "cash_and_equivalents": "10",
+    "non_operating_investments": "0",
+    "diluted_shares": "10",
+    "lease_policy_version": "lease_adjusted_debt.v1",
+    "input_fact_ids": ["fact-market-cap", "fact-capital", "fact-shares"]
+  },
+  "comparables": [
+    {
+      "metric_type": "ev_revenue",
+      "candidate_denominator": "1000",
+      "candidate_denominator_fact_ids": ["fact-revenue"],
+      "method_role": "primary",
+      "role_rationale": "Recurring-revenue peers with matching TTM and lease policy",
+      "peer_observations": [
+        {"peer_id": "peer-1", "multiple": "2", "lease_policy_version": "lease_adjusted_debt.v1", "evidence_id": "evidence-peer"},
+        {"peer_id": "peer-2", "multiple": "3", "lease_policy_version": "lease_adjusted_debt.v1", "evidence_id": "evidence-peer"},
+        {"peer_id": "peer-3", "multiple": "4", "lease_policy_version": "lease_adjusted_debt.v1", "evidence_id": "evidence-peer"},
+        {"peer_id": "peer-4", "multiple": "5", "lease_policy_version": "lease_adjusted_debt.v1", "evidence_id": "evidence-peer"},
+        {"peer_id": "peer-5", "multiple": "6", "lease_policy_version": "lease_adjusted_debt.v1", "evidence_id": "evidence-peer"}
+      ]
+    },
+    {
+      "metric_type": "pe",
+      "candidate_denominator": "20",
+      "candidate_denominator_fact_ids": ["fact-net-income"],
+      "method_role": "primary",
+      "role_rationale": "Profitable peers with common-equity denominator consistency",
+      "peer_observations": [
+        {"peer_id": "peer-1", "multiple": "20", "lease_policy_version": "lease_adjusted_debt.v1", "evidence_id": "evidence-peer"},
+        {"peer_id": "peer-2", "multiple": "21", "lease_policy_version": "lease_adjusted_debt.v1", "evidence_id": "evidence-peer"},
+        {"peer_id": "peer-3", "multiple": "22", "lease_policy_version": "lease_adjusted_debt.v1", "evidence_id": "evidence-peer"},
+        {"peer_id": "peer-4", "multiple": "23", "lease_policy_version": "lease_adjusted_debt.v1", "evidence_id": "evidence-peer"},
+        {"peer_id": "peer-5", "multiple": "24", "lease_policy_version": "lease_adjusted_debt.v1", "evidence_id": "evidence-peer"}
+      ]
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "bear",
+      "description": "Slower renewals and weaker margin conversion",
+      "forecast_fcff": ["60", "60", "60", "60", "60"],
+      "wacc": "0.11",
+      "terminal_growth": "0.015",
+      "assumption_ids": ["assumption-bear-growth", "assumption-bear-margin"],
+      "evidence_ids": ["evidence-filing"],
+      "key_dependencies": ["renewal growth stays below history"],
+      "invalidation_ids": ["invalidation-growth"]
+    },
+    {
+      "name": "base",
+      "description": "Reported cash conversion persists without heroic expansion",
+      "forecast_fcff": ["100", "100", "100", "100", "100"],
+      "wacc": "0.10",
+      "terminal_growth": "0.02",
+      "assumption_ids": ["assumption-base-growth", "assumption-base-margin"],
+      "evidence_ids": ["evidence-filing"],
+      "key_dependencies": ["cash conversion remains near reported history"],
+      "invalidation_ids": ["invalidation-growth"]
+    },
+    {
+      "name": "bull",
+      "description": "Verified product catalyst expands renewals and cash margin",
+      "forecast_fcff": ["140", "140", "140", "140", "140"],
+      "wacc": "0.09",
+      "terminal_growth": "0.025",
+      "assumption_ids": ["assumption-bull-growth", "assumption-bull-margin"],
+      "evidence_ids": ["evidence-filing"],
+      "key_dependencies": ["product launch converts to evidenced renewals"],
+      "catalyst_ids": ["catalyst-launch"]
+    }
+  ],
+  "reverse_dcf": {
+    "solve_variable": "revenue_cagr",
+    "lower": "0",
+    "upper": "0.20",
+    "target_common_equity": "1400",
+    "starting_fcff": "100",
+    "wacc": "0.10",
+    "terminal_growth": "0.02",
+    "evidence_ids": ["evidence-market", "evidence-filing"]
+  },
+  "catalysts": [
+    {
+      "catalyst_id": "catalyst-launch",
+      "title": "Filed product availability milestone",
+      "mechanism": "Could increase renewal cash flows if adoption converts to paid seats",
+      "expected_window_start": "2026-02-01T00:00:00Z",
+      "expected_window_end": "2026-06-30T23:59:59Z",
+      "status": "expected",
+      "materiality": "high",
+      "direction": "positive",
+      "evidence_ids": ["evidence-filing"],
+      "confirmation_source_requirement": "next filed 10-Q revenue disaggregation",
+      "monitoring_query_or_identifier": "FIX 10-Q product revenue",
+      "uncertainty": "high"
+    }
+  ],
+  "invalidations": [
+    {
+      "invalidation_id": "invalidation-growth",
+      "thesis_component": "Recurring revenue durability",
+      "observable_metric_or_event": "reported year-over-year recurring revenue growth",
+      "operator": "lt",
+      "threshold": "0",
+      "units": "unit_fraction",
+      "observation_window": "two consecutive filed quarters",
+      "required_source_class": "SEC filing",
+      "monitoring_identifier": "FIX recurring revenue",
+      "severity": "thesis_broken",
+      "linked_assumption_ids": ["assumption-base-growth"],
+      "linked_claim_ids": ["claim-recurring-growth"],
+      "action_on_trigger": "mark_rejected",
+      "rationale": "Sustained contraction breaks the durable-growth premise",
+      "status": "active"
+    }
+  ],
+  "thesis": {
+    "executive_summary": "Fixture Systems has evidenced recurring revenue and cash conversion, but valuation methods disagree materially.",
+    "why_now": "A filed product milestone creates a measurable research window.",
+    "thesis_claim_ids": ["claim-recurring-growth"],
+    "contrary_evidence_ids": ["evidence-contrary"],
+    "principal_risks": ["Renewal growth may contract", "Cash conversion may normalize lower"],
+    "unknowns": ["Product-level paid adoption is not yet filed"]
+  }
+}
