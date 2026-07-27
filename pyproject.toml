@@ -19,14 +19,15 @@ dependencies = [
 [project.scripts]
 market-lab-webapp = "market_lab.webapp:main"
 market-lab-web-evidence = "market_lab.web_evidence_cli:main"
+market-lab-prediction = "market_lab.prediction_markets.cli:main"
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8",
 ]
 
-[tool.setuptools]
-packages = ["market_lab"]
+[tool.setuptools.packages.find]
+include = ["market_lab*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/market_lab"]
