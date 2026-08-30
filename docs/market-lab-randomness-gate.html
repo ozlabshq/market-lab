@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Market Lab — Randomness Gate</title>
+  <style>
+    :root {
+      --paper: #f7f4ed;
+      --paper-2: #fffdf8;
+      --ink: #262626;
+      --muted: #5f625f;
+      --soft: #8b8d87;
+      --rule: #d8d2c6;
+      --accent: #8f1824;
+      --accent-soft: #f3dfe1;
+      --link: #315d86;
+      --good: #2f6b4f;
+      --warn: #9a6415;
+      --bad: #96392e;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+    a { color: var(--link); }
+    .page { width: min(1180px, calc(100% - 32px)); margin: 0 auto; }
+    header { padding: 46px 0 24px; border-bottom: 1px solid var(--rule); }
+    .eyebrow { color: var(--accent); font: 700 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; }
+    h1, h2, .quote { font-family: Georgia, "Times New Roman", serif; }
+    h1 { max-width: 850px; margin: 12px 0 10px; font-size: clamp(42px, 6vw, 76px); line-height: .98; letter-spacing: -.035em; }
+    .dek { max-width: 760px; margin: 0; font-size: 19px; color: var(--muted); }
+    .meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+    .tag { border: 1px solid var(--rule); background: var(--paper-2); border-radius: 999px; padding: 5px 10px; font-size: 12px; }
+    nav { position: sticky; top: 0; z-index: 4; background: rgba(247,244,237,.95); border-bottom: 1px solid var(--rule); backdrop-filter: blur(8px); }
+    nav .page { display: flex; gap: 18px; overflow-x: auto; padding-top: 12px; padding-bottom: 12px; }
+    nav a { color: var(--muted); text-decoration: none; font-size: 13px; white-space: nowrap; }
+    nav a:hover { color: var(--accent); }
+    section { padding: 54px 0; border-bottom: 1px solid var(--rule); }
+    h2 { margin: 0 0 12px; font-size: 34px; line-height: 1.1; }
+    .section-intro { max-width: 780px; color: var(--muted); font-size: 17px; }
+    .quote { max-width: 980px; margin: 26px 0 0; padding-left: 22px; border-left: 4px solid var(--accent); font-size: clamp(25px, 4vw, 42px); line-height: 1.18; font-style: italic; }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 18px; margin-top: 28px; }
+    .card { background: var(--paper-2); border: 1px solid var(--rule); border-radius: 8px; padding: 20px; }
+    .span-4 { grid-column: span 4; }
+    .span-6 { grid-column: span 6; }
+    .span-12 { grid-column: span 12; }
+    .card h3 { margin: 0 0 7px; font-size: 17px; }
+    .card p, .card li { color: var(--muted); font-size: 14px; }
+    .card ul { margin: 10px 0 0; padding-left: 18px; }
+    .status { display: inline-block; margin-bottom: 12px; padding: 4px 8px; border-radius: 4px; font: 700 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .status.good { color: var(--good); background: #e2eee7; }
+    .status.partial { color: var(--warn); background: #f5ead6; }
+    .status.missing { color: var(--bad); background: #f3e0dc; }
+    .diagram-wrap { margin-top: 30px; padding: 18px; overflow-x: auto; background: var(--paper-2); border: 1px solid var(--rule); border-radius: 8px; }
+    svg { display: block; min-width: 1020px; width: 100%; height: auto; }
+    .gate-list { counter-reset: gate; display: grid; gap: 12px; margin-top: 28px; }
+    .gate { display: grid; grid-template-columns: 62px 1fr auto; gap: 18px; align-items: center; padding: 16px 18px; background: var(--paper-2); border: 1px solid var(--rule); border-radius: 6px; }
+    .gate::before { counter-increment: gate; content: "0" counter(gate); color: var(--accent); font: 700 18px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .gate strong { display: block; }
+    .gate span { color: var(--muted); font-size: 14px; }
+    .gate code { color: var(--ink); background: #eee9de; padding: 3px 6px; border-radius: 3px; font-size: 12px; white-space: nowrap; }
+    .matrix { width: 100%; border-collapse: collapse; margin-top: 28px; background: var(--paper-2); border: 1px solid var(--rule); }
+    .matrix th, .matrix td { padding: 13px 14px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+    .matrix th { color: var(--muted); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+    .matrix td { font-size: 14px; }
+    .matrix td:first-child { font-weight: 700; width: 24%; }
+    .roadmap { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-top: 30px; }
+    .step { min-height: 210px; padding: 16px; background: var(--paper-2); border-top: 4px solid var(--rule); border-left: 1px solid var(--rule); border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+    .step:first-child { border-top-color: var(--accent); }
+    .step b { display: block; margin: 8px 0; }
+    .step small { color: var(--accent); font: 700 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .step p { color: var(--muted); font-size: 13px; }
+    .source-box { display: grid; grid-template-columns: 250px 1fr; gap: 24px; margin-top: 28px; padding: 20px; background: var(--paper-2); border: 1px solid var(--rule); border-radius: 8px; }
+    .source-box img { width: 100%; border: 1px solid var(--rule); }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    pre { overflow-x: auto; margin: 16px 0 0; padding: 16px; background: #eee9de; border-radius: 5px; font-size: 12px; line-height: 1.6; }
+    footer { padding: 36px 0 64px; color: var(--muted); font-size: 13px; }
+    @media (max-width: 880px) {
+      .span-4, .span-6 { grid-column: span 12; }
+      .roadmap { grid-template-columns: 1fr; }
+      .step { min-height: 0; }
+      .source-box { grid-template-columns: 1fr; }
+      .source-box img { max-width: 340px; }
+      .gate { grid-template-columns: 42px 1fr; }
+      .gate code { grid-column: 2; justify-self: start; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="page">
+      <div class="eyebrow">OzLabs · Market Lab methodology</div>
+      <h1>The Randomness Gate</h1>
+      <p class="dek">A fail-closed promotion contract that asks one question: does a proposed edge survive known exposures, unseen time, realistic friction, and changing regimes?</p>
+      <div class="meta">
+        <span class="tag">Research and paper only</span>
+        <span class="tag">Source grade: CONCEPT_ONLY</span>
+        <span class="tag">No live trading</span>
+        <span class="tag">Implementation-ready contract</span>
+      </div>
+    </div>
+  </header>
+
+  <nav aria-label="Document sections">
+    <div class="page">
+      <a href="#decision">Decision</a>
+      <a href="#pipeline">Pipeline</a>
+      <a href="#gates">Seven gates</a>
+      <a href="#state">Current state</a>
+      <a href="#record">Evidence record</a>
+      <a href="#roadmap">Build sequence</a>
+      <a href="#source">Source boundary</a>
+    </div>
+  </nav>
+
+  <main class="page">
+    <section id="decision">
+      <div class="eyebrow">01 · Decision</div>
+      <h2>Adopt the method, not the picture's claims.</h2>
+      <p class="section-intro">The supplied image expresses a useful discipline. It does not provide enough provenance to act as empirical evidence. Market Lab should turn the discipline into an auditable promotion gate.</p>
+      <div class="quote">“A raw signal is not an edge. An edge is the part that survives known-exposure removal, out-of-sample tests, costs, time, and regime change.”</div>
+      <div class="grid">
+        <article class="card span-4">
+          <span class="status good">ADOPT</span>
+          <h3>Residual thinking</h3>
+          <p>Measure what remains after declared market, sector, and factor controls explain the obvious return.</p>
+        </article>
+        <article class="card span-4">
+          <span class="status good">ADOPT</span>
+          <h3>Survival tests</h3>
+          <p>Use unseen periods, friction stress, and regime breakdowns before a strategy can reach paper review.</p>
+        </article>
+        <article class="card span-4">
+          <span class="status missing">DO NOT ADOPT</span>
+          <h3>Unverified evidence</h3>
+          <p>Do not cite the displayed chart, authors, affiliations, or density values as validated research.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="pipeline">
+      <div class="eyebrow">02 · Promotion pipeline</div>
+      <h2>Every candidate must lose its easy explanations first.</h2>
+      <p class="section-intro">The pipeline narrows a strategy from a broad idea to an independently reviewable paper candidate. Any broken evidence link stops promotion.</p>
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 1120 370" role="img" aria-labelledby="diagram-title diagram-desc">
+          <title id="diagram-title">Market Lab Randomness Gate promotion flow</title>
+          <desc id="diagram-desc">A left-to-right process from raw hypothesis through point-in-time data, known exposure removal, out-of-sample testing, friction and regime stress, ending in research only, paper candidate, or reject.</desc>
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L10,5 L0,10 z" fill="#8b8d87"></path>
+            </marker>
+          </defs>
+          <g fill="none" stroke="#8b8d87" stroke-width="1.5" marker-end="url(#arrow)">
+            <path d="M160 145 H195"></path><path d="M345 145 H380"></path><path d="M530 145 H565"></path>
+            <path d="M715 145 H750"></path><path d="M900 145 H935"></path>
+            <path d="M1010 200 V245 H855"></path><path d="M1010 200 V285 H855"></path><path d="M1010 200 V325 H855"></path>
+          </g>
+          <g font-family="Inter, sans-serif">
+            <g transform="translate(10 85)"><rect width="150" height="120" rx="6" fill="#f3dfe1" stroke="#8f1824"></rect><text x="16" y="30" font-size="12" fill="#8f1824" font-weight="700">PREDECLARE</text><text x="16" y="58" font-size="17" fill="#262626" font-weight="700">Raw hypothesis</text><text x="16" y="82" font-size="12" fill="#5f625f">Mechanism · universe</text><text x="16" y="100" font-size="12" fill="#5f625f">horizon · thresholds</text></g>
+            <g transform="translate(195 85)"><rect width="150" height="120" rx="6" fill="#fffdf8" stroke="#d8d2c6"></rect><text x="16" y="30" font-size="12" fill="#5f625f" font-weight="700">INTEGRITY</text><text x="16" y="58" font-size="17" fill="#262626" font-weight="700">Point-in-time data</text><text x="16" y="82" font-size="12" fill="#5f625f">Source · availability</text><text x="16" y="100" font-size="12" fill="#5f625f">no lookahead</text></g>
+            <g transform="translate(380 85)"><rect width="150" height="120" rx="6" fill="#fffdf8" stroke="#d8d2c6"></rect><text x="16" y="30" font-size="12" fill="#5f625f" font-weight="700">EXPLAIN</text><text x="16" y="58" font-size="17" fill="#262626" font-weight="700">Known exposures</text><text x="16" y="82" font-size="12" fill="#5f625f">Market · sector</text><text x="16" y="100" font-size="12" fill="#5f625f">declared factors</text></g>
+            <g transform="translate(565 85)"><rect width="150" height="120" rx="6" fill="#fffdf8" stroke="#d8d2c6"></rect><text x="16" y="30" font-size="12" fill="#5f625f" font-weight="700">VALIDATE</text><text x="16" y="58" font-size="17" fill="#262626" font-weight="700">Unseen time</text><text x="16" y="82" font-size="12" fill="#5f625f">Repeated walk-forward</text><text x="16" y="100" font-size="12" fill="#5f625f">purge · embargo</text></g>
+            <g transform="translate(750 85)"><rect width="150" height="120" rx="6" fill="#fffdf8" stroke="#d8d2c6"></rect><text x="16" y="30" font-size="12" fill="#5f625f" font-weight="700">STRESS</text><text x="16" y="58" font-size="17" fill="#262626" font-weight="700">Friction + regimes</text><text x="16" y="82" font-size="12" fill="#5f625f">Costs · liquidity</text><text x="16" y="100" font-size="12" fill="#5f625f">segment stability</text></g>
+            <g transform="translate(935 85)"><rect width="150" height="120" rx="6" fill="#eee9de" stroke="#8b8d87"></rect><text x="16" y="30" font-size="12" fill="#5f625f" font-weight="700">ADJUDICATE</text><text x="16" y="58" font-size="17" fill="#262626" font-weight="700">Evidence verdict</text><text x="16" y="82" font-size="12" fill="#5f625f">Sample size</text><text x="16" y="100" font-size="12" fill="#5f625f">multiple tests</text></g>
+            <g transform="translate(855 228)"><rect width="230" height="34" rx="4" fill="#f5ead6" stroke="#9a6415"></rect><text x="14" y="22" font-size="13" fill="#9a6415" font-weight="700">RESEARCH_ONLY</text></g>
+            <g transform="translate(855 268)"><rect width="230" height="34" rx="4" fill="#e2eee7" stroke="#2f6b4f"></rect><text x="14" y="22" font-size="13" fill="#2f6b4f" font-weight="700">PAPER_CANDIDATE</text></g>
+            <g transform="translate(855 308)"><rect width="230" height="34" rx="4" fill="#f3e0dc" stroke="#96392e"></rect><text x="14" y="22" font-size="13" fill="#96392e" font-weight="700">REJECT</text></g>
+          </g>
+        </svg>
+      </div>
+    </section>
+
+    <section id="gates">
+      <div class="eyebrow">03 · Seven gates</div>
+      <h2>One broken gate stops promotion.</h2>
+      <div class="gate-list">
+        <div class="gate"><div><strong>Predeclare</strong><span>Freeze mechanism, universe, controls, OOS design, costs, thresholds, and invalidation.</span></div><code>MANIFEST</code></div>
+        <div class="gate"><div><strong>Point-in-time integrity</strong><span>Reject synthetic, stale, revised, unavailable, or future information in promotion tests.</span></div><code>DATA</code></div>
+        <div class="gate"><div><strong>Known-exposure removal</strong><span>Report raw and residual returns after declared market and sector controls.</span></div><code>RESIDUAL</code></div>
+        <div class="gate"><div><strong>Unseen-period validation</strong><span>Use repeated chronological folds. Preserve warm-up context. Purge overlapping labels.</span></div><code>OOS</code></div>
+        <div class="gate"><div><strong>Friction stress</strong><span>Apply next-open fills, slippage, commissions, turnover, liquidity limits, and stress costs.</span></div><code>NET</code></div>
+        <div class="gate"><div><strong>Persistence</strong><span>Break results down by fold, symbol, sector, regime, calendar period, and cost case.</span></div><code>STABILITY</code></div>
+        <div class="gate"><div><strong>Randomness guard</strong><span>Expose sample size, test count, sensitivity, confidence, and concentration.</span></div><code>EVIDENCE</code></div>
+      </div>
+    </section>
+
+    <section id="state">
+      <div class="eyebrow">04 · Current Market Lab state</div>
+      <h2>Strong safety base. Incomplete edge proof.</h2>
+      <p class="section-intro">This map is based on the active repository, not the image.</p>
+      <table class="matrix">
+        <thead><tr><th>Capability</th><th>Status</th><th>Observed state</th><th>Required delta</th></tr></thead>
+        <tbody>
+          <tr><td>Execution timing</td><td><span class="status good">IMPLEMENTED</span></td><td>Close <code>t</code> decisions fill at next open.</td><td>Keep unchanged.</td></tr>
+          <tr><td>Benchmark awareness</td><td><span class="status partial">PARTIAL</span></td><td>SPY-relative momentum guards and ranking exist.</td><td>Add general benchmark and sector controls.</td></tr>
+          <tr><td>Out-of-sample</td><td><span class="status partial">PARTIAL</span></td><td>One deterministic train/OOS split exists.</td><td>Add repeated chronological folds and purge/embargo.</td></tr>
+          <tr><td>Friction</td><td><span class="status partial">PARTIAL</span></td><td>Fixed slippage and commission exist.</td><td>Add stress scenarios, spread, turnover, and capacity flags.</td></tr>
+          <tr><td>Regime analysis</td><td><span class="status partial">PARTIAL</span></td><td>Simple regime labels and post-trade diagnosis exist.</td><td>Require promotion stability by regime and segment.</td></tr>
+          <tr><td>Residual returns</td><td><span class="status missing">MISSING</span></td><td>No general market/sector residual series.</td><td>Add an auditable rolling exposure model.</td></tr>
+          <tr><td>Promotion record</td><td><span class="status missing">MISSING</span></td><td>No immutable, unified edge verdict gates paper eligibility.</td><td>Add versioned manifests and <code>EdgeEvaluation</code>.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="record">
+      <div class="eyebrow">05 · Evidence record</div>
+      <h2>The result must be inspectable and hash-bound.</h2>
+      <p class="section-intro">Every evaluation should produce one immutable record. A paper queue can later cite the record, but it can never bypass portfolio or risk gates.</p>
+      <pre>EdgeEvaluation
+├── strategy_id + strategy_version
+├── manifest_sha256 + data_catalog_sha256
+├── benchmark_ids[] + control_ids[]
+├── train_windows[] + oos_windows[]
+├── raw_metrics + residual_metrics
+├── cost_scenarios[] + regime_metrics[]
+├── stability_metrics + multiple_test_count
+├── quality_flags[] + gates[]
+└── verdict + blockers[] + next_owner + next_action</pre>
+      <div class="grid">
+        <article class="card span-4"><span class="status partial">RESEARCH_ONLY</span><h3>Continue learning</h3><p>Evidence is incomplete or not strong enough for paper promotion.</p></article>
+        <article class="card span-4"><span class="status good">PAPER_CANDIDATE</span><h3>Eligible for risk review</h3><p>All evidence gates pass. This status does not create an order.</p></article>
+        <article class="card span-4"><span class="status missing">REJECT</span><h3>Stop or redesign</h3><p>A declared threshold or integrity rule failed.</p></article>
+      </div>
+    </section>
+
+    <section id="roadmap">
+      <div class="eyebrow">06 · Safe build sequence</div>
+      <h2>Build evidence before enforcement.</h2>
+      <div class="roadmap">
+        <div class="step"><small>SLICE 1</small><b>Evidence contract</b><p>Versioned manifest, immutable evaluation schema, pure fail-closed evaluator. No queue wiring.</p></div>
+        <div class="step"><small>SLICE 2</small><b>Residual model</b><p>Rolling market and sector exposures with synthetic-fixture recovery tests and no-lookahead checks.</p></div>
+        <div class="step"><small>SLICE 3</small><b>Robust OOS</b><p>Repeated walk-forward folds, stored boundaries, purge/embargo, and an overfit-failure fixture.</p></div>
+        <div class="step"><small>SLICE 4</small><b>Stress report</b><p>Baseline and stressed friction. Results by fold, symbol, sector, regime, and calendar period.</p></div>
+        <div class="step"><small>SLICE 5</small><b>Paper enforcement</b><p>Only an approved, current, hash-matched evaluation can make a strategy paper-eligible.</p></div>
+      </div>
+    </section>
+
+    <section id="source">
+      <div class="eyebrow">07 · Source boundary</div>
+      <h2>The image is inspiration, not a citation.</h2>
+      <div class="source-box">
+        <img src="assets/quant-guide-trading-randomness-reference.jpg" alt="Supplied Quant Guide to Trading Randomness visual reference">
+        <div>
+          <p>The image shows a paper-like page titled <em>The Quant Guide To Trading Randomness</em>. It has no visible DOI, date, venue, references, or public source URL. The named authors, affiliations, and <code>qmlab.edu</code> emails are not independently verified.</p>
+          <p><strong>Evidence grade:</strong> <code>CONCEPT_ONLY</code></p>
+          <p><strong>SHA-256:</strong><br><code>cad9b49cad2824557c1e021f1a11f91cdb0cadcd9be05d463c136a013c70b61f</code></p>
+          <p><strong>Boundary:</strong> Adopt the workflow. Do not adopt the displayed empirical distribution or provenance claims.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="page">
+    <strong>Market Lab posture:</strong> research-first, paper/mock only, no live broker execution. Full technical contract: <code>research/MARKET_LAB_RANDOMNESS_GATE.md</code>.
+  </footer>
+</body>
+</html>
