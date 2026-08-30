@@ -1,8 +1,11 @@
 # Market Lab Randomness Gate
 
-**Status:** Implementation-ready methodology contract  
-**Scope:** Research and paper/mock trading only  
-**Captured:** 2026-08-30T22:12:13Z  
+**Status:** Implementation-ready methodology contract
+
+**Scope:** Research and paper/mock trading only
+
+**Captured:** 2026-08-30T22:12:13Z
+
 **Visual companion:** `docs/market-lab-randomness-gate.html`
 
 ## Decision
